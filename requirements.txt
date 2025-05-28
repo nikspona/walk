@@ -1,4 +1,3 @@
-streamlit
+streamlit>=1.36.0
 sqlite-utils
 Pillow
-streamlit-audiorecorder

@@ -6,7 +6,6 @@ import sqlite3
 import uuid
 from datetime import datetime
 from io import BytesIO
-from audiorecorder import audiorecorder
 
 # Set page config
 st.set_page_config(page_title="Walk Gallery", page_icon="📸", layout="wide")
@@ -100,10 +99,9 @@ if not show_gallery:
     st.subheader("Upload Your Image")
     uploaded_image = st.file_uploader("Upload Your Image", type=["png", "jpg", "jpeg"], label_visibility="hidden")
     
-    # Audio recording
+    # Audio recording with native st.audio_input
     st.subheader("Record Your Sound")
-    st.write("Click the button below to start/stop recording")
-    audio_recorder = audiorecorder("Click to record", "Recording... Click to stop")
+    audio_input = st.audio_input("Record Your Sound", label_visibility="hidden")
     
     # Buttons - now stacked vertically
     # Submit button
@@ -117,7 +115,7 @@ if not show_gallery:
             st.rerun()
     
     if submit:
-        if text_input or uploaded_image or not audio_recorder.empty():
+        if text_input or uploaded_image or audio_input:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # Create a new post with all media types
@@ -147,13 +145,10 @@ if not show_gallery:
                 st.success("Image uploaded successfully!")
             
             # Add audio if recorded
-            if not audio_recorder.empty():
-                # Use BytesIO to handle the audio export
-                buffer = BytesIO()
-                audio_recorder.export(buffer, format="wav")
-                buffer.seek(0)
-                audio_bytes = buffer.read()
-                encoded = base64.b64encode(audio_bytes).decode()
+            if audio_input:
+                # Convert file to base64 for storage
+                bytes_data = audio_input.getvalue()
+                encoded = base64.b64encode(bytes_data).decode()
                 
                 new_post['content']['audio'] = {
                     'name': f"recording_{timestamp}.wav",
