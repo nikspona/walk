@@ -91,9 +91,9 @@ st.title("Walk Gallery")
 if not show_gallery:
     # Content Creation Page
     
-    # Text input
+    # Text input - using regular text_input instead of text_area for better Safari compatibility
     st.subheader("Type Your Word")
-    text_input = st.text_area("Type Your Word", height=150, label_visibility="hidden")
+    text_input = st.text_input("Type Your Word", key="text_input", label_visibility="hidden")
     
     # Image upload
     st.subheader("Upload Your Image")
