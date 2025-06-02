@@ -2,90 +2,210 @@ import streamlit as st
 import os
 import base64
 import json
-import sqlite3
 import uuid
 from datetime import datetime
 from io import BytesIO
 from streamlit_drawable_canvas import st_canvas
 import numpy as np
 from PIL import Image
+import psycopg2
+from sqlalchemy import create_engine, text
 
 # Set page config
 st.set_page_config(page_title="Walk Gallery", page_icon="📸", layout="wide")
 
-# Function to initialize database
+# Database configuration
+def get_database_url():
+    """Get PostgreSQL database URL from environment"""
+    postgres_url = os.environ.get('DATABASE_URL') or os.environ.get('POSTGRES_URL')
+    
+    if not postgres_url:
+        st.error("❌ DATABASE_URL environment variable is required!")
+        st.info("Please set DATABASE_URL to your PostgreSQL connection string")
+        st.stop()
+    
+    # Fix for some cloud providers that use postgres:// instead of postgresql://
+    if postgres_url.startswith('postgres://'):
+        postgres_url = postgres_url.replace('postgres://', 'postgresql://', 1)
+    
+    return postgres_url
+
+def get_db_engine():
+    """Get SQLAlchemy engine for PostgreSQL"""
+    try:
+        database_url = get_database_url()
+        
+        engine = create_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            connect_args={
+                "sslmode": "require",
+                "connect_timeout": 10
+            }
+        )
+        
+        return engine
+    except Exception as e:
+        st.error(f"Database connection error: {e}")
+        return None
+
 def init_db():
-    # Create data directory if it doesn't exist
-    if not os.path.exists("data"):
-        os.makedirs("data")
+    """Initialize PostgreSQL database tables"""
+    engine = get_db_engine()
+    if engine is None:
+        return False
     
-    # Connect to SQLite database (will create if not exists)
-    conn = sqlite3.connect('data/gallery.db')
-    c = conn.cursor()
-    
-    # Create table if it doesn't exist
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS posts (
-        id TEXT PRIMARY KEY,
-        timestamp TEXT,
-        datetime TEXT,
-        content BLOB
-    )
-    ''')
-    
-    conn.commit()
-    return conn
+    try:
+        with engine.connect() as conn:
+            # Create table for PostgreSQL
+            create_table_sql = """
+            CREATE TABLE IF NOT EXISTS posts (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                datetime TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            
+            conn.execute(text(create_table_sql))
+            
+            # Create index for better performance
+            try:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_timestamp ON posts(timestamp)"))
+            except:
+                # Index might already exist
+                pass
+            
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        st.error(f"Database initialization error: {e}")
+        return False
 
-# Function to check if running on Streamlit Cloud
-def is_streamlit_cloud():
-    return os.environ.get('STREAMLIT_SHARING_MODE') == 'streamlit_cloud'
-
-# Alert for Streamlit Cloud users
-if is_streamlit_cloud():
-    st.warning("""
-    ⚠️ This app is running on Streamlit Cloud using a temporary database. 
-    Any data you add will be lost when the app restarts.
-    For persistent storage, deploy with a cloud database solution.
-    """)
 
 # Function to save a post
 def save_post(post):
-    conn = init_db()
-    c = conn.cursor()
+    engine = get_db_engine()
+    if engine is None:
+        return False
     
-    # Convert content dict to JSON string, then to binary
-    content_json = json.dumps(post['content'])
-    
-    # Insert into database
-    c.execute(
-        "INSERT INTO posts (id, timestamp, datetime, content) VALUES (?, ?, ?, ?)",
-        (post['id'], post['timestamp'], post['datetime'], content_json)
-    )
-    
-    conn.commit()
-    conn.close()
+    try:
+        with engine.connect() as conn:
+            # Convert content dict to JSON string
+            content_json = json.dumps(post['content'])
+            
+            # Insert into database
+            conn.execute(
+                text("INSERT INTO posts (id, timestamp, datetime, content) VALUES (:id, :timestamp, :datetime, :content)"),
+                {
+                    'id': post['id'],
+                    'timestamp': post['timestamp'],
+                    'datetime': post['datetime'],
+                    'content': content_json
+                }
+            )
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        st.error(f"Error saving post: {e}")
+        return False
 
 # Function to get all posts
 def get_posts():
-    conn = init_db()
-    c = conn.cursor()
+    engine = get_db_engine()
+    if engine is None:
+        return []
     
-    # Get all posts ordered by timestamp (newest first)
-    c.execute("SELECT id, timestamp, datetime, content FROM posts ORDER BY timestamp DESC")
-    rows = c.fetchall()
+    try:
+        with engine.connect() as conn:
+            # Get all posts ordered by timestamp (newest first)
+            result = conn.execute(text("SELECT id, timestamp, datetime, content FROM posts ORDER BY timestamp DESC"))
+            rows = result.fetchall()
+            
+            posts = []
+            for row in rows:
+                try:
+                    post = {
+                        'id': row[0],
+                        'timestamp': row[1],
+                        'datetime': row[2],
+                        'content': json.loads(row[3])
+                    }
+                    posts.append(post)
+                except json.JSONDecodeError as e:
+                    st.warning(f"Skipping corrupted post: {e}")
+                    continue
+            
+            return posts
+            
+    except Exception as e:
+        st.error(f"Error retrieving posts: {e}")
+        return []
+
+# Function to delete a post
+def delete_post(post_id):
+    engine = get_db_engine()
+    if engine is None:
+        return False
     
-    posts = []
-    for row in rows:
-        post = {
-            'id': row[0],
-            'timestamp': row[1],
-            'datetime': row[2],
-            'content': json.loads(row[3])  # Convert JSON string back to dict
-        }
-        posts.append(post)
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("DELETE FROM posts WHERE id = :id"), {'id': post_id})
+            conn.commit()
+            return result.rowcount > 0
+            
+    except Exception as e:
+        st.error(f"Error deleting post: {e}")
+        return False
+
+# Function to get database statistics
+def get_db_stats():
+    engine = get_db_engine()
+    if engine is None:
+        return {}
     
-    conn.close()
-    return posts
+    try:
+        with engine.connect() as conn:
+            # Get total number of posts
+            result = conn.execute(text("SELECT COUNT(*) FROM posts"))
+            total_posts = result.fetchone()[0]
+            
+            # Get posts by content type
+            result = conn.execute(text("SELECT content FROM posts"))
+            rows = result.fetchall()
+            
+            stats = {
+                'total_posts': total_posts,
+                'text_posts': 0,
+                'image_posts': 0,
+                'drawing_posts': 0,
+                'audio_posts': 0,
+                'database_type': 'PostgreSQL'
+            }
+            
+            for row in rows:
+                try:
+                    content = json.loads(row[0])
+                    if 'text' in content:
+                        stats['text_posts'] += 1
+                    if 'image' in content:
+                        stats['image_posts'] += 1
+                    if 'drawing' in content:
+                        stats['drawing_posts'] += 1
+                    if 'audio' in content:
+                        stats['audio_posts'] += 1
+                except json.JSONDecodeError:
+                    continue
+            
+            return stats
+            
+    except Exception as e:
+        st.error(f"Error getting database stats: {e}")
+        return {}
 
 # Initialize database on startup
 init_db()
@@ -225,21 +345,49 @@ if not show_gallery:
                 st.success("Audio recorded successfully!")
             
             # Save the post to database
-            save_post(new_post)
-            
-            # Automatically navigate to gallery after submission
-            navigate_to_gallery()
-            st.rerun()
+            if save_post(new_post):
+                st.success("Content saved to database successfully!")
+                # Automatically navigate to gallery after submission
+                navigate_to_gallery()
+                st.rerun()
+            else:
+                st.error("Failed to save content to database. Please try again.")
         else:
             st.warning("Please add some content before submitting.")
 else:
     # Gallery Page
     st.header("Gallery")
     
-    # Back button
-    if st.button("← Create New Content", type="primary"):
-        navigate_to_create()
-        st.rerun()
+    # Back button and database stats
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        if st.button("← Create New Content", type="primary"):
+            navigate_to_create()
+            st.rerun()
+    
+    with col2:
+        # Show database statistics
+        stats = get_db_stats()
+        if stats:
+            st.metric("Total Posts", stats.get('total_posts', 0))
+    
+    # Show detailed stats in an expander
+    with st.expander("📊 Database Statistics"):
+        if stats:
+            # Show database type prominently
+            st.info(f"Database: {stats.get('database_type', 'Unknown')}")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Text Posts", stats.get('text_posts', 0))
+            with col2:
+                st.metric("Audio Posts", stats.get('audio_posts', 0))
+            with col3:
+                st.metric("Images", stats.get('image_posts', 0))
+            with col4:
+                st.metric("Drawings", stats.get('drawing_posts', 0))
+        else:
+            st.info("Unable to load database statistics")
     
     # Get posts from database
     posts = get_posts()
@@ -255,7 +403,9 @@ else:
             text_posts = [post for post in posts if 'text' in post['content']]
             if text_posts:
                 for post in text_posts:
-                    st.markdown(f"**{post['content']['text'].upper()}**")
+                    with st.container():
+                        st.markdown(f"**{post['content']['text'].upper()}**")
+                        st.caption(f"Created: {post['datetime']}")
             else:
                 st.info("No text content yet.")
         
@@ -265,8 +415,10 @@ else:
             audio_posts = [post for post in posts if 'audio' in post['content']]
             if audio_posts:
                 for post in audio_posts:
-                    audio_bytes = base64.b64decode(post['content']['audio']['data'])
-                    st.audio(audio_bytes, format=post['content']['audio']['type'])
+                    with st.container():
+                        audio_bytes = base64.b64decode(post['content']['audio']['data'])
+                        st.audio(audio_bytes, format=post['content']['audio']['type'])
+                        st.caption(f"Created: {post['datetime']}")
             else:
                 st.info("No audio recordings yet.")
         
@@ -276,8 +428,10 @@ else:
             image_posts = [post for post in posts if 'image' in post['content']]
             if image_posts:
                 for post in image_posts:
-                    image_bytes = base64.b64decode(post['content']['image']['data'])
-                    st.image(BytesIO(image_bytes))
+                    with st.container():
+                        image_bytes = base64.b64decode(post['content']['image']['data'])
+                        st.image(BytesIO(image_bytes))
+                        st.caption(f"Created: {post['datetime']}")
             else:
                 st.info("No images uploaded yet.")
         
@@ -287,8 +441,10 @@ else:
             drawing_posts = [post for post in posts if 'drawing' in post['content']]
             if drawing_posts:
                 for post in drawing_posts:
-                    drawing_bytes = base64.b64decode(post['content']['drawing']['data'])
-                    st.image(BytesIO(drawing_bytes), caption="Walk Drawing")
+                    with st.container():
+                        drawing_bytes = base64.b64decode(post['content']['drawing']['data'])
+                        st.image(BytesIO(drawing_bytes), caption="Walk Drawing")
+                        st.caption(f"Created: {post['datetime']}")
             else:
                 st.info("No drawings yet.")
     else:
