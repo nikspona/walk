@@ -35,6 +35,23 @@
 
    Once deployed, Streamlit Cloud will provide a URL where your app is hosted.
 
+## Features Supported on Streamlit Cloud
+
+✅ **All features work perfectly on Streamlit Cloud:**
+- Text input and display
+- Image upload and viewing
+- Audio recording and playback
+- **Drawing canvas with touch support** (works on mobile and desktop)
+- SQLite database storage
+- Gallery organization
+
+## Drawing Feature Compatibility
+
+The `streamlit-drawable-canvas` component is fully supported on Streamlit Cloud:
+- **Mobile devices**: Touch drawing works seamlessly
+- **Desktop**: Mouse/trackpad drawing functions perfectly
+- **No additional configuration needed**
+
 ## Important Notes About Persistent Storage
 
 The app uses SQLite for persistent storage. In Streamlit Cloud:
@@ -56,5 +73,5 @@ The app uses SQLite for persistent storage. In Streamlit Cloud:
 For a production app with many users:
 
 1. **Upgrade from SQLite**: When user load increases, consider migrating to a proper database service
-2. **Media Storage**: For large media files, consider using a dedicated service like AWS S3, Google Cloud Storage, or similar
+2. **Media Storage**: For large media files and drawings, consider using a dedicated service like AWS S3, Google Cloud Storage, or similar
 3. **Authentication**: Add user authentication if needed for user-specific content 

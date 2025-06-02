@@ -1,0 +1,25 @@
+# Streamlit
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Uploaded files
+uploads/
+uploads/images/
+uploads/audio/
+
+# Database
+data/
+*.db
+
+# OS specific
+.DS_Store
+Thumbs.db 
