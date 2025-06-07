@@ -3,4 +3,13 @@ base = "dark"
 primaryColor = "#ffffff"
 backgroundColor = "#0e1117"
 secondaryBackgroundColor = "#262730"
-textColor = "#ffffff" 
+textColor = "#ffffff"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer" 
