@@ -40,6 +40,7 @@ def get_database_url():
     
     return postgres_url
 
+@st.cache_resource
 def get_db_engine():
     """Get SQLAlchemy engine for PostgreSQL"""
     try:
@@ -142,6 +143,7 @@ def save_post(post):
         return False
 
 # Function to get all posts
+@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds, hide spinner
 def get_posts():
     engine = get_db_engine()
     if engine is None:
@@ -287,16 +289,22 @@ if st.session_state.show_gallery:
             words_text = " • ".join(words)
             st.markdown(f"**{words_text}**")
             
-           
-            # Generate new poem and save it
-            poem = poet.run_sync(f"User words: {words}")
-            poem_text = poem.output
+            # Check if we already have a poem for these words
+            existing_poem = get_latest_poem(words)
+            
+            if existing_poem:
+                # Display existing poem
+                st.markdown(existing_poem)
+            else:
+                # Generate new poem and save it
+                poem = poet.run_sync(f"User words: {words}")
+                poem_text = poem.output
                 
-             # Save the poem to database
-            save_poem(words, poem_text)
+                # Save the poem to database
+                save_poem(words, poem_text)
                 
-            # Display the poem
-            st.markdown(poem_text)
+                # Display the poem
+                st.markdown(poem_text)
             
             st.divider()
         
@@ -341,18 +349,16 @@ else:
         st.write("Create a drawing that represents your walk or experience.")
         
         # Drawing options
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
-            stroke_width = st.slider("Brush size", 1, 25, 3)
-        with col2:
             stroke_color = st.color_picker("Brush color", "#000000")
-        with col3:
+        with col2:
             bg_color = st.color_picker("Background color", "#808080")
         
         # Create canvas
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
-            stroke_width=stroke_width,
+            stroke_width=3,
             stroke_color=stroke_color,
             background_color=bg_color,
             background_image=None,
