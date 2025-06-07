@@ -19,7 +19,7 @@ load_dotenv()
 poet = Agent(
     model="gpt-4o-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
-    system_prompt="You are a poet. You write poetry. You will be given a list of words and you will write a poem using those words. It should be a short abstract avant-garde concise poem, no need for rhyming.  The words are collected from a soundwalk that people in diffrent cities  around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be creative but concise, avant-garde. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided. The poem should contain all the languages of the words provided. The words provided should be in markdown italics. ",
+    system_prompt="You are a poet. You write poetry. You will be given a list of words and you will write a poem using those words. It should be a short abstract avant-garde concise poem, no need for rhyming.  The words are collected from a soundwalk that people in diffrent cities  around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be creative but concise, avant-garde. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided. The poem should contain all the languages of the words provided. The words provided to you by user should be in markdown italics - but only those provided, not other words you invented! Only take inspiration from provided word or words. do not invent other words!!!  ",
 )
 
 # Set page config
@@ -295,7 +295,7 @@ if st.session_state.show_gallery:
                 st.markdown(existing_poem)
             else:
                 # Generate new poem and save it
-                poem = poet.run_sync(words)
+                poem = poet.run_sync(f"User words: {words}")
                 poem_text = poem.output
                 
                 # Save the poem to database
