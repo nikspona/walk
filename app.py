@@ -19,11 +19,11 @@ load_dotenv()
 poet = Agent(
     model="gpt-4o-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
-    system_prompt="You are a poet. You write poetry. You will be given a list of words and you will write a poem using those words. It should be a short abstract poem, no need for rhyming.  The words are collected from a soundwalk that people in diffrent cities  around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be creative but concise, avant-garde. The poem should be as short as possible, but still be a poem and use all the words provided. The poem should contain all the languages of the words provided. The words provided should be in markdown italics",
+    system_prompt="You are a poet. You write poetry. You will be given a list of words and you will write a poem using those words. It should be a short abstract avant-garde concise poem, no need for rhyming.  The words are collected from a soundwalk that people in diffrent cities  around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be creative but concise, avant-garde. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided. The poem should contain all the languages of the words provided. The words provided should be in markdown italics. ",
 )
 
 # Set page config
-st.set_page_config(page_title="Walk Gallery", page_icon="📸", layout="wide")
+st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
 
 # Database configuration
 def get_database_url():
@@ -257,7 +257,6 @@ def go_to_create():
     reset_creation_flow()
 
 # Application title
-st.title("Soundwalk")
 
 # Main content
 if st.session_state.show_gallery:
@@ -335,7 +334,7 @@ if st.session_state.show_gallery:
     
     # Create new content button at the bottom
     st.divider()
-    if st.button("+ Create New Content", type="primary", use_container_width=True):
+    if st.button("+ Create New Content", use_container_width=True):
         go_to_create()
         st.rerun()
 
@@ -354,7 +353,7 @@ else:
         with col2:
             stroke_color = st.color_picker("Brush color", "#000000")
         with col3:
-            bg_color = st.color_picker("Background color", "#FFFFFF")
+            bg_color = st.color_picker("Background color", "#808080")
         
         # Create canvas
         canvas_result = st_canvas(
@@ -379,7 +378,7 @@ else:
                 st.rerun()
         
         with col2:
-            if st.button("Next: Add Word →", type="primary", use_container_width=True):
+            if st.button("Next: Add Word →", use_container_width=True):
                 # Save drawing if created
                 if canvas_result.image_data is not None and np.any(canvas_result.image_data[:,:,3] > 0):
                     img = Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA')
@@ -410,12 +409,12 @@ else:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("← Back to Drawing"):
+            if st.button("← Back to Drawing", use_container_width=True):
                 st.session_state.current_step = 1
                 st.rerun()
         
         with col2:
-            if st.button("Next: Add Picture →", type="primary", use_container_width=True):
+            if st.button("Next: Add Picture →", use_container_width=True):
                 # Save text if provided
                 if text_input.strip():
                     st.session_state.post_data['text'] = text_input.strip()
@@ -435,12 +434,12 @@ else:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("← Back to Word"):
+            if st.button("← Back to Word", use_container_width=True):
                 st.session_state.current_step = 2
                 st.rerun()
         
         with col2:
-            if st.button("Next: Add Sound →", type="primary", use_container_width=True):
+            if st.button("Next: Add Sound →", use_container_width=True):
                 # Save image if uploaded
                 if uploaded_image:
                     bytes_data = uploaded_image.getvalue()
@@ -467,12 +466,12 @@ else:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("← Back to Picture"):
+            if st.button("← Back to Picture", use_container_width=True):
                 st.session_state.current_step = 3
                 st.rerun()
         
         with col2:
-            if st.button("Finish & View Gallery →", type="primary", use_container_width=True):
+            if st.button("Finish & View Gallery →", use_container_width=True):
                 # Save audio if recorded
                 if audio_input:
                     bytes_data = audio_input.getvalue()
