@@ -10,6 +10,17 @@ import numpy as np
 from PIL import Image
 import psycopg2
 from sqlalchemy import create_engine, text
+from pydantic_ai import Agent
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (for local development)
+load_dotenv()
+
+poet = Agent(
+    model="gpt-4o-mini",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    system_prompt="You are a poet. You write poetry. You will be given a list of words and you will write a poem using those words. It should be a short abstract poem, no need for rhyming.  The words are collected from a soundwalk that people in diffrent cities  around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be creative but concise, avant-garde. The poem should be as short as possible, but still be a poem and use all the words provided. The poem should contain all the languages of the words provided. The words provided should be in markdown italics",
+)
 
 # Set page config
 st.set_page_config(page_title="Walk Gallery", page_icon="📸", layout="wide")
@@ -21,7 +32,6 @@ def get_database_url():
     
     if not postgres_url:
         st.error("❌ DATABASE_URL environment variable is required!")
-        st.info("Please set DATABASE_URL to your PostgreSQL connection string")
         st.stop()
     
     # Fix for some cloud providers that use postgres:// instead of postgresql://
@@ -45,9 +55,14 @@ def get_db_engine():
             }
         )
         
+        # Test the connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        
         return engine
+        
     except Exception as e:
-        st.error(f"Database connection error: {e}")
+        st.error(f"❌ Database connection error: {e}")
         return None
 
 def init_db():
@@ -71,9 +86,22 @@ def init_db():
             
             conn.execute(text(create_table_sql))
             
+            # Create poems table
+            create_poems_table_sql = """
+            CREATE TABLE IF NOT EXISTS poems (
+                id TEXT PRIMARY KEY,
+                words TEXT NOT NULL,
+                poem TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            
+            conn.execute(text(create_poems_table_sql))
+            
             # Create index for better performance
             try:
                 conn.execute(text("CREATE INDEX IF NOT EXISTS idx_timestamp ON posts(timestamp)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_poems_created_at ON poems(created_at)"))
             except:
                 # Index might already exist
                 pass
@@ -84,7 +112,6 @@ def init_db():
     except Exception as e:
         st.error(f"Database initialization error: {e}")
         return False
-
 
 # Function to save a post
 def save_post(post):
@@ -146,306 +173,341 @@ def get_posts():
         st.error(f"Error retrieving posts: {e}")
         return []
 
-# Function to delete a post
-def delete_post(post_id):
+# Function to save a poem
+def save_poem(words_list, poem_text):
     engine = get_db_engine()
     if engine is None:
         return False
     
     try:
         with engine.connect() as conn:
-            result = conn.execute(text("DELETE FROM posts WHERE id = :id"), {'id': post_id})
+            # Create a unique ID for the poem
+            poem_id = str(uuid.uuid4())
+            words_string = " • ".join(words_list)
+            
+            # Insert into database
+            conn.execute(
+                text("INSERT INTO poems (id, words, poem) VALUES (:id, :words, :poem)"),
+                {
+                    'id': poem_id,
+                    'words': words_string,
+                    'poem': poem_text
+                }
+            )
             conn.commit()
-            return result.rowcount > 0
+            return True
             
     except Exception as e:
-        st.error(f"Error deleting post: {e}")
+        st.error(f"Error saving poem: {e}")
         return False
 
-# Function to get database statistics
-def get_db_stats():
+# Function to get the latest poem for given words
+def get_latest_poem(words_list):
     engine = get_db_engine()
     if engine is None:
-        return {}
+        return None
     
     try:
         with engine.connect() as conn:
-            # Get total number of posts
-            result = conn.execute(text("SELECT COUNT(*) FROM posts"))
-            total_posts = result.fetchone()[0]
+            words_string = " • ".join(words_list)
             
-            # Get posts by content type
-            result = conn.execute(text("SELECT content FROM posts"))
-            rows = result.fetchall()
+            # Get the most recent poem for these exact words
+            result = conn.execute(
+                text("SELECT poem FROM poems WHERE words = :words ORDER BY created_at DESC LIMIT 1"),
+                {'words': words_string}
+            )
+            row = result.fetchone()
             
-            stats = {
-                'total_posts': total_posts,
-                'text_posts': 0,
-                'image_posts': 0,
-                'drawing_posts': 0,
-                'audio_posts': 0,
-                'database_type': 'PostgreSQL'
-            }
-            
-            for row in rows:
-                try:
-                    content = json.loads(row[0])
-                    if 'text' in content:
-                        stats['text_posts'] += 1
-                    if 'image' in content:
-                        stats['image_posts'] += 1
-                    if 'drawing' in content:
-                        stats['drawing_posts'] += 1
-                    if 'audio' in content:
-                        stats['audio_posts'] += 1
-                except json.JSONDecodeError:
-                    continue
-            
-            return stats
+            if row:
+                return row[0]
+            return None
             
     except Exception as e:
-        st.error(f"Error getting database stats: {e}")
-        return {}
+        st.error(f"Error retrieving poem: {e}")
+        return None
 
 # Initialize database on startup
 init_db()
 
-# Create navigation
-show_gallery = st.session_state.get("show_gallery", False)
-
-def navigate_to_gallery():
-    st.session_state.show_gallery = True
-
-def navigate_to_create():
+# Initialize session state for multi-step flow
+if 'current_step' not in st.session_state:
+    st.session_state.current_step = 1
+if 'post_data' not in st.session_state:
+    st.session_state.post_data = {}
+if 'show_gallery' not in st.session_state:
     st.session_state.show_gallery = False
 
+def reset_creation_flow():
+    """Reset the creation flow to start over"""
+    st.session_state.current_step = 1
+    st.session_state.post_data = {}
+    st.session_state.show_gallery = False
+
+def next_step():
+    """Move to the next step in the creation flow"""
+    st.session_state.current_step += 1
+
+def go_to_gallery():
+    """Navigate to gallery"""
+    st.session_state.show_gallery = True
+
+def go_to_create():
+    """Navigate to create flow"""
+    st.session_state.show_gallery = False
+    reset_creation_flow()
+
 # Application title
-st.title("Walk Gallery")
+st.title("Soundwalk")
 
 # Main content
-if not show_gallery:
-    # Content Creation Page
-    
-    # Text input - using regular text_input instead of text_area for better Safari compatibility
-    st.subheader("Type Your Word")
-    text_input = st.text_input("Type Your Word", key="text_input", label_visibility="hidden")
-    
-    # Image upload
-    st.subheader("Upload Your Image")
-    uploaded_image = st.file_uploader("Upload Your Image", type=["png", "jpg", "jpeg"], label_visibility="hidden")
-    
-    # Drawing canvas
-    st.subheader("Draw Your Walk")
-    
-    # Drawing options
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        stroke_width = st.slider("Brush size", 1, 25, 3)
-    with col2:
-        stroke_color = st.color_picker("Brush color", "#000000")
-    with col3:
-        bg_color = st.color_picker("Background color", "#FFFFFF")
-    
-    # Create canvas
-    canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # Fixed fill color with some transparency
-        stroke_width=stroke_width,
-        stroke_color=stroke_color,
-        background_color=bg_color,
-        background_image=None,
-        update_streamlit=True,
-        height=300,
-        width=400,
-        drawing_mode="freedraw",
-        point_display_radius=0,
-        display_toolbar=True,
-        key="canvas",
-    )
-    
-    # Audio recording with native st.audio_input
-    st.subheader("Record Your Sound")
-    audio_input = st.audio_input("Record Your Sound", label_visibility="hidden")
-    
-    # Buttons - now stacked vertically
-    # Submit button
-    submit = st.button("Add to Gallery", type="primary", use_container_width=True)
-    
-    # View gallery button (only shown if there are posts)
-    if get_posts():
-        view_gallery = st.button("View Gallery 🖼️", use_container_width=True)
-        if view_gallery:
-            navigate_to_gallery()
-            st.rerun()
-    
-    if submit:
-        if text_input or uploaded_image or audio_input or (canvas_result.image_data is not None and np.any(canvas_result.image_data[:,:,3] > 0)):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Create a new post with all media types
-            new_post = {
-                'id': str(uuid.uuid4()),
-                'timestamp': timestamp,
-                'datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                'content': {}
-            }
-            
-            # Add text if provided
-            if text_input:
-                new_post['content']['text'] = text_input
-                st.success("Text added successfully!")
-            
-            # Add image if uploaded
-            if uploaded_image:
-                # Convert file to base64 for storage
-                bytes_data = uploaded_image.getvalue()
-                encoded = base64.b64encode(bytes_data).decode()
-                
-                new_post['content']['image'] = {
-                    'name': uploaded_image.name,
-                    'type': uploaded_image.type,
-                    'data': encoded
-                }
-                st.success("Image uploaded successfully!")
-            
-            # Add drawing if created
-            if canvas_result.image_data is not None and np.any(canvas_result.image_data[:,:,3] > 0):
-                # Convert canvas to PIL Image
-                img = Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA')
-                
-                # Convert to RGB (remove alpha channel) and save as PNG
-                img_rgb = Image.new('RGB', img.size, (255, 255, 255))
-                img_rgb.paste(img, mask=img.split()[3])  # Use alpha channel as mask
-                
-                # Convert to bytes
-                img_buffer = BytesIO()
-                img_rgb.save(img_buffer, format='PNG')
-                img_bytes = img_buffer.getvalue()
-                
-                # Encode to base64
-                encoded = base64.b64encode(img_bytes).decode()
-                
-                new_post['content']['drawing'] = {
-                    'name': f"drawing_{timestamp}.png",
-                    'type': "image/png",
-                    'data': encoded
-                }
-                st.success("Drawing added successfully!")
-            
-            # Add audio if recorded
-            if audio_input:
-                # Convert file to base64 for storage
-                bytes_data = audio_input.getvalue()
-                encoded = base64.b64encode(bytes_data).decode()
-                
-                new_post['content']['audio'] = {
-                    'name': f"recording_{timestamp}.wav",
-                    'type': "audio/wav",
-                    'data': encoded
-                }
-                st.success("Audio recorded successfully!")
-            
-            # Save the post to database
-            if save_post(new_post):
-                st.success("Content saved to database successfully!")
-                # Automatically navigate to gallery after submission
-                navigate_to_gallery()
-                st.rerun()
-            else:
-                st.error("Failed to save content to database. Please try again.")
-        else:
-            st.warning("Please add some content before submitting.")
-else:
+if st.session_state.show_gallery:
     # Gallery Page
-    st.header("Gallery")
-    
-    # Back button and database stats
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        if st.button("← Create New Content", type="primary"):
-            navigate_to_create()
-            st.rerun()
-    
-    with col2:
-        # Show database statistics
-        stats = get_db_stats()
-        if stats:
-            st.metric("Total Posts", stats.get('total_posts', 0))
-    
-    # Show detailed stats in an expander
-    with st.expander("📊 Database Statistics"):
-        if stats:
-            # Show database type prominently
-            st.info(f"Database: {stats.get('database_type', 'Unknown')}")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Text Posts", stats.get('text_posts', 0))
-            with col2:
-                st.metric("Audio Posts", stats.get('audio_posts', 0))
-            with col3:
-                st.metric("Images", stats.get('image_posts', 0))
-            with col4:
-                st.metric("Drawings", stats.get('drawing_posts', 0))
-        else:
-            st.info("Unable to load database statistics")
     
     # Get posts from database
     posts = get_posts()
     
-    # Display posts grouped by type in columns
+    # Display posts with words grouped together
     if posts:
-        # Create four columns for different content types
-        col1, col2, col3, col4 = st.columns(4)
+        # Separate words from other content
+        words = []
+        other_content = []
         
-        # Words column
-        with col1:
-            st.subheader("Words")
-            text_posts = [post for post in posts if 'text' in post['content']]
-            if text_posts:
-                for post in text_posts:
-                    with st.container():
-                        st.markdown(f"**{post['content']['text'].upper()}**")
-                        st.caption(f"Created: {post['datetime']}")
+        for post in posts:
+            content = post['content']
+            if 'text' in content:
+                words.append(content['text'])
+            
+            # Check if post has non-text content
+            has_other_content = any(key in content for key in ['image', 'drawing', 'audio'])
+            if has_other_content:
+                other_content.append(post)
+        
+        # Display words section
+        if words:
+            # Display words in a flowing text format
+            words_text = " • ".join(words)
+            st.markdown(f"**{words_text}**")
+            
+            # Check if we already have a poem for these words
+            existing_poem = get_latest_poem(words)
+            
+            if existing_poem:
+                # Display existing poem
+                st.markdown(existing_poem)
             else:
-                st.info("No text content yet.")
+                # Generate new poem and save it
+                poem = poet.run_sync(words)
+                poem_text = poem.output
+                
+                # Save the poem to database
+                save_poem(words, poem_text)
+                
+                # Display the poem
+                st.markdown(poem_text)
+            
+            st.divider()
         
-        # Sounds column
-        with col2:
-            st.subheader("Sounds")
-            audio_posts = [post for post in posts if 'audio' in post['content']]
-            if audio_posts:
-                for post in audio_posts:
-                    with st.container():
-                        audio_bytes = base64.b64decode(post['content']['audio']['data'])
-                        st.audio(audio_bytes, format=post['content']['audio']['type'])
-                        st.caption(f"Created: {post['datetime']}")
-            else:
-                st.info("No audio recordings yet.")
-        
-        # Images column
-        with col3:
-            st.subheader("Images")
-            image_posts = [post for post in posts if 'image' in post['content']]
-            if image_posts:
-                for post in image_posts:
-                    with st.container():
-                        image_bytes = base64.b64decode(post['content']['image']['data'])
+        # Display other content in grid
+        if other_content:
+            # Create responsive columns for media content
+            cols = st.columns([1, 1, 1, 1])
+            
+            for i, post in enumerate(other_content):
+                with cols[i % 4]:
+                    content = post['content']
+                    
+                    # Display image content
+                    if 'image' in content:
+                        image_bytes = base64.b64decode(content['image']['data'])
                         st.image(BytesIO(image_bytes))
-                        st.caption(f"Created: {post['datetime']}")
-            else:
-                st.info("No images uploaded yet.")
-        
-        # Drawings column
-        with col4:
-            st.subheader("Drawings")
-            drawing_posts = [post for post in posts if 'drawing' in post['content']]
-            if drawing_posts:
-                for post in drawing_posts:
-                    with st.container():
-                        drawing_bytes = base64.b64decode(post['content']['drawing']['data'])
-                        st.image(BytesIO(drawing_bytes), caption="Walk Drawing")
-                        st.caption(f"Created: {post['datetime']}")
-            else:
-                st.info("No drawings yet.")
+                    
+                    # Display drawing content
+                    if 'drawing' in content:
+                        drawing_bytes = base64.b64decode(content['drawing']['data'])
+                        st.image(BytesIO(drawing_bytes))
+                    
+                    # Display audio content
+                    if 'audio' in content:
+                        audio_bytes = base64.b64decode(content['audio']['data'])
+                        st.audio(audio_bytes, format=content['audio']['type'])
     else:
-        st.info("No content yet. Add some content from the create page!") 
+        st.info("No content yet. Add some content from the create page!")
+    
+    # Create new content button at the bottom
+    st.divider()
+    if st.button("+ Create New Content", type="primary", use_container_width=True):
+        go_to_create()
+        st.rerun()
+
+else:
+    # Multi-step Content Creation Flow
+    
+    # Step 1: Drawing
+    if st.session_state.current_step == 1:
+        st.subheader("🎨 Draw Your Walk")
+        st.write("Create a drawing that represents your walk or experience.")
+        
+        # Drawing options
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            stroke_width = st.slider("Brush size", 1, 25, 3)
+        with col2:
+            stroke_color = st.color_picker("Brush color", "#000000")
+        with col3:
+            bg_color = st.color_picker("Background color", "#FFFFFF")
+        
+        # Create canvas
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",
+            stroke_width=stroke_width,
+            stroke_color=stroke_color,
+            background_color=bg_color,
+            background_image=None,
+            update_streamlit=True,
+            height=400,
+            width=600,
+            drawing_mode="freedraw",
+            point_display_radius=0,
+            display_toolbar=True,
+            key="canvas",
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Skip Drawing", use_container_width=True):
+                next_step()
+                st.rerun()
+        
+        with col2:
+            if st.button("Next: Add Word →", type="primary", use_container_width=True):
+                # Save drawing if created
+                if canvas_result.image_data is not None and np.any(canvas_result.image_data[:,:,3] > 0):
+                    img = Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA')
+                    img_rgb = Image.new('RGB', img.size, (255, 255, 255))
+                    img_rgb.paste(img, mask=img.split()[3])
+                    
+                    img_buffer = BytesIO()
+                    img_rgb.save(img_buffer, format='PNG')
+                    img_bytes = img_buffer.getvalue()
+                    encoded = base64.b64encode(img_bytes).decode()
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    st.session_state.post_data['drawing'] = {
+                        'name': f"drawing_{timestamp}.png",
+                        'type': "image/png",
+                        'data': encoded
+                    }
+                
+                next_step()
+                st.rerun()
+    
+    # Step 2: Word
+    elif st.session_state.current_step == 2:
+        st.subheader("✍️ Type Your Word")
+        st.write("Add a word or phrase that captures your walk.")
+        
+        text_input = st.text_input("Enter your word or phrase:", placeholder="Type something meaningful...")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("← Back to Drawing"):
+                st.session_state.current_step = 1
+                st.rerun()
+        
+        with col2:
+            if st.button("Next: Add Picture →", type="primary", use_container_width=True):
+                # Save text if provided
+                if text_input.strip():
+                    st.session_state.post_data['text'] = text_input.strip()
+                
+                next_step()
+                st.rerun()
+    
+    # Step 3: Picture
+    elif st.session_state.current_step == 3:
+        st.subheader("📸 Upload Your Picture")
+        st.write("Share a photo from your walk or something that represents it.")
+        
+        uploaded_image = st.file_uploader("Choose an image file", type=["png", "jpg", "jpeg"])
+        
+        if uploaded_image:
+            st.image(uploaded_image, caption="Your uploaded image", use_column_width=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("← Back to Word"):
+                st.session_state.current_step = 2
+                st.rerun()
+        
+        with col2:
+            if st.button("Next: Add Sound →", type="primary", use_container_width=True):
+                # Save image if uploaded
+                if uploaded_image:
+                    bytes_data = uploaded_image.getvalue()
+                    encoded = base64.b64encode(bytes_data).decode()
+                    
+                    st.session_state.post_data['image'] = {
+                        'name': uploaded_image.name,
+                        'type': uploaded_image.type,
+                        'data': encoded
+                    }
+                
+                next_step()
+                st.rerun()
+    
+    # Step 4: Sound
+    elif st.session_state.current_step == 4:
+        st.subheader("🎵 Record Your Sound")
+        st.write("Capture the sounds of your walk or record a voice note.")
+        
+        audio_input = st.audio_input("Record audio:")
+        
+        if audio_input:
+            st.audio(audio_input)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("← Back to Picture"):
+                st.session_state.current_step = 3
+                st.rerun()
+        
+        with col2:
+            if st.button("Finish & View Gallery →", type="primary", use_container_width=True):
+                # Save audio if recorded
+                if audio_input:
+                    bytes_data = audio_input.getvalue()
+                    encoded = base64.b64encode(bytes_data).decode()
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    st.session_state.post_data['audio'] = {
+                        'name': f"recording_{timestamp}.wav",
+                        'type': "audio/wav",
+                        'data': encoded
+                    }
+                
+                # Create and save the final post
+                if st.session_state.post_data:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    new_post = {
+                        'id': str(uuid.uuid4()),
+                        'timestamp': timestamp,
+                        'datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'content': st.session_state.post_data
+                    }
+                    
+                    if save_post(new_post):
+                        st.success("Your walk has been added to the gallery!")
+                        go_to_gallery()
+                        st.rerun()
+                    else:
+                        st.error("Failed to save your walk. Please try again.")
+                else:
+                    st.warning("Please add at least one type of content before finishing.")
+    
+    # Show existing gallery button if there are posts
+    if get_posts():
+        st.divider()
+        if st.button("View Existing Gallery 🖼️", use_container_width=True):
+            go_to_gallery()
+            st.rerun() 
