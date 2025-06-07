@@ -19,7 +19,7 @@ load_dotenv()
 poet = Agent(
     model="gpt-4o-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
-    system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using those words. Write one or two lines per given word, not more! It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be concise. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided by the user. The poem should contain all the languages of the words provided by the user. The words provided to you by user should be in markdown italics - but only those provided, not other words you invented! Only take inspiration from provided word or words. do not invent other words!!!  ",
+    system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using ONLY those words. It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be concise. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided by the user. The poem should contain all the languages of the words provided by the user. ",
 )
 
 # Set page config
@@ -166,7 +166,7 @@ def get_posts():
                     }
                     posts.append(post)
                 except json.JSONDecodeError as e:
-                    st.warning(f"Skipping corrupted post: {e}")
+                    # Skip corrupted post silently
                     continue
             
             return posts
@@ -430,7 +430,7 @@ else:
         uploaded_image = st.file_uploader("Choose an image file", type=["png", "jpg", "jpeg"])
         
         if uploaded_image:
-            st.image(uploaded_image, caption="Your uploaded image", use_column_width=True)
+            st.image(uploaded_image, caption="Your uploaded image", use_container_width=True)
         
         col1, col2 = st.columns(2)
         with col1:
