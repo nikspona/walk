@@ -19,7 +19,7 @@ load_dotenv()
 poet = Agent(
     model="gpt-4o-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
-    system_prompt="You are a poet. You write poetry. You will be given a list of words and you will write a poem using those words. It should be a short abstract avant-garde concise poem, no need for rhyming.  The words are collected from a soundwalk that people in diffrent cities  around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be creative but concise, avant-garde. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided. The poem should contain all the languages of the words provided. The words provided to you by user should be in markdown italics - but only those provided, not other words you invented! Only take inspiration from provided word or words. do not invent other words!!!  ",
+    system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using those words. Write one or two lines per given word, not more! It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Be concise. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should be as short as possible, but still be a poem and use all the words provided by the user. The poem should contain all the languages of the words provided by the user. The words provided to you by user should be in markdown italics - but only those provided, not other words you invented! Only take inspiration from provided word or words. do not invent other words!!!  ",
 )
 
 # Set page config
@@ -287,22 +287,16 @@ if st.session_state.show_gallery:
             words_text = " • ".join(words)
             st.markdown(f"**{words_text}**")
             
-            # Check if we already have a poem for these words
-            existing_poem = get_latest_poem(words)
-            
-            if existing_poem:
-                # Display existing poem
-                st.markdown(existing_poem)
-            else:
-                # Generate new poem and save it
-                poem = poet.run_sync(f"User words: {words}")
-                poem_text = poem.output
+           
+            # Generate new poem and save it
+            poem = poet.run_sync(f"User words: {words}")
+            poem_text = poem.output
                 
-                # Save the poem to database
-                save_poem(words, poem_text)
+             # Save the poem to database
+            save_poem(words, poem_text)
                 
-                # Display the poem
-                st.markdown(poem_text)
+            # Display the poem
+            st.markdown(poem_text)
             
             st.divider()
         
