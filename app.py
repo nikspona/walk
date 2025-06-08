@@ -393,7 +393,7 @@ if st.session_state.show_gallery:
                     # Display drawing content
                     if 'drawing' in content:
                         drawing_bytes = base64.b64decode(content['drawing']['data'])
-                        st.image(BytesIO(drawing_bytes))
+                        st.image(BytesIO(drawing_bytes), width=300)
                     
                     # Display audio content
                     if 'audio' in content:
@@ -475,6 +475,10 @@ else:
         existing_text = st.session_state.post_data.get('text', '')
         text_input = st.text_input("Enter your word or phrase:", value=existing_text, placeholder="Type something meaningful...")
         
+        # Save text immediately when entered
+        if text_input.strip():
+            st.session_state.post_data['text'] = text_input.strip()
+        
         col1, col2 = st.columns(2)
         with col1:
             if st.button("← Back to Drawing", use_container_width=True):
@@ -485,8 +489,6 @@ else:
             # Only enable next button if there's text
             if text_input.strip():
                 if st.button("Next: Add Picture →", use_container_width=True):
-                    # Save text when moving to next step
-                    st.session_state.post_data['text'] = text_input.strip()
                     next_step()
                     st.rerun()
             else:
