@@ -12,14 +12,27 @@ import psycopg2
 from sqlalchemy import create_engine, text
 from pydantic_ai import Agent
 from dotenv import load_dotenv
+import time
+from functools import lru_cache
+import cloudinary
+import cloudinary.uploader
+from cloudinary.utils import cloudinary_url
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
 
+# Configure Cloudinary
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
+
 poet = Agent(
     model="gpt-4o-mini",
     api_key=os.getenv("OPENAI_API_KEY"),
-    system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using ONLY those provided words. Do not use any other words except to connect the given words. It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should contain all the languages of the words provided by the user. ",
+    system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using those provided words. Use as few other words to connect the given words as possible. It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should contain all the languages of the words provided by the user, you can use several languages in one poem. ",
 )
 
 # Set page config
@@ -50,6 +63,9 @@ def get_db_engine():
             database_url,
             pool_pre_ping=True,
             pool_recycle=300,
+            pool_size=20,  # Increased from default 5
+            max_overflow=30,  # Allow up to 50 total connections (20 + 30)
+            pool_timeout=30,  # Wait up to 30 seconds for a connection
             connect_args={
                 "sslmode": "require",
                 "connect_timeout": 10
@@ -152,7 +168,7 @@ def save_post(post):
     return False
 
 # Function to get all posts
-@st.cache_data(ttl=60, show_spinner=False)  # Cache for 60 seconds, hide spinner
+@st.cache_data(ttl=30, show_spinner=False)  # Reduced cache time to 30 seconds for more real-time updates
 def get_posts():
     engine = get_db_engine()
     if engine is None:
@@ -294,6 +310,60 @@ if 'show_gallery' not in st.session_state:
 if 'pending_post' not in st.session_state:
     st.session_state.pending_post = None
 
+# Add rate limiting for poem generation
+last_poem_generation = {}
+POEM_GENERATION_COOLDOWN = 10  # seconds between poem generations per user
+
+# Media upload functions
+def upload_image_to_cloudinary(image_bytes, filename):
+    """Upload image to Cloudinary and return URL"""
+    try:
+        result = cloudinary.uploader.upload(
+            image_bytes,
+            public_id=f"soundwalk/images/{filename}_{uuid.uuid4()}",
+            resource_type="image",
+            quality="auto:best",
+            fetch_format="auto",
+            # Remove size limits - preserve original dimensions
+            # Only compress if image is extremely large (over 4MB)
+            eager=[
+                {"quality": "auto:best", "fetch_format": "auto"}
+            ]
+        )
+        return result.get('secure_url')
+    except Exception as e:
+        return None  # Silent failure
+
+def upload_audio_to_cloudinary(audio_bytes, filename):
+    """Upload audio to Cloudinary and return URL"""
+    try:
+        result = cloudinary.uploader.upload(
+            audio_bytes,
+            public_id=f"soundwalk/audio/{filename}_{uuid.uuid4()}",
+            resource_type="video"  # Cloudinary uses 'video' for audio files
+        )
+        return result.get('secure_url')
+    except Exception as e:
+        return None  # Silent failure
+
+def upload_drawing_to_cloudinary(image_bytes, filename):
+    """Upload drawing to Cloudinary and return URL"""
+    try:
+        result = cloudinary.uploader.upload(
+            image_bytes,
+            public_id=f"soundwalk/drawings/{filename}_{uuid.uuid4()}",
+            resource_type="image",
+            format="png",
+            quality="auto:best",  # Better quality for drawings
+            transformation=[
+                {"width": 800, "height": 800, "crop": "limit"},  # Preserve drawing quality
+                {"quality": "auto:best"}
+            ]
+        )
+        return result.get('secure_url')
+    except Exception as e:
+        return None  # Silent failure
+
 def reset_creation_flow():
     """Reset the creation flow to start over"""
     st.session_state.current_step = 1
@@ -313,6 +383,36 @@ def go_to_create():
     st.session_state.show_gallery = False
     reset_creation_flow()
 
+# Initialize user ID for rate limiting
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
+
+def can_generate_poem():
+    """Check if user can generate a poem (rate limiting)"""
+    user_id = st.session_state.get('user_id', 'anonymous')
+    current_time = time.time()
+    
+    if user_id in last_poem_generation:
+        time_since_last = current_time - last_poem_generation[user_id]
+        if time_since_last < POEM_GENERATION_COOLDOWN:
+            return False, POEM_GENERATION_COOLDOWN - time_since_last
+    
+    last_poem_generation[user_id] = current_time
+    return True, 0
+
+def generate_poem_with_rate_limit(words):
+    """Generate poem with rate limiting"""
+    can_generate, wait_time = can_generate_poem()
+    
+    if not can_generate:
+        return None  # Silent failure - don't show warning to user
+    
+    try:
+        poem = poet.run_sync(f"User words: {words}")
+        return poem.output
+    except Exception as e:
+        return None  # Silent failure - don't show error to user
+
 # Application title
 
 # Main content
@@ -325,9 +425,10 @@ if st.session_state.show_gallery:
         
         # Try to save in background
         if save_post(pending_post):
-            # Clear the pending post and refresh cache
+            # Clear the pending post and refresh cache only for this user
             st.session_state.pending_post = None
-            get_posts.clear()
+            # Use a more targeted cache refresh instead of clearing everything
+            st.cache_data.clear()
         else:
             st.error("❌ Failed to save your walk. Please try again.")
             # Keep the pending post for retry
@@ -365,14 +466,15 @@ if st.session_state.show_gallery:
                 st.markdown(existing_poem)
             else:
                 # Generate new poem and save it
-                poem = poet.run_sync(f"User words: {words}")
-                poem_text = poem.output
+                poem_text = generate_poem_with_rate_limit(words)
                 
-                # Save the poem to database
-                save_poem(words, poem_text)
-                
-                # Display the poem
-                st.markdown(poem_text)
+                if poem_text:
+                    # Save the poem to database
+                    save_poem(words, poem_text)
+                    
+                    # Display the poem
+                    st.markdown(poem_text)
+                # If poem generation fails, nothing is shown
             
             st.divider()
         
@@ -387,20 +489,36 @@ if st.session_state.show_gallery:
                     
                     # Display image content
                     if 'image' in content:
-                        image_bytes = base64.b64decode(content['image']['data'])
-                        st.image(BytesIO(image_bytes))
+                        if 'url' in content['image']:
+                            # New format with Cloudinary URL
+                            st.image(content['image']['url'])
+                        else:
+                            # Legacy format with base64 data (for backward compatibility)
+                            image_bytes = base64.b64decode(content['image']['data'])
+                            st.image(BytesIO(image_bytes))
                     
                     # Display drawing content
                     if 'drawing' in content:
-                        drawing_bytes = base64.b64decode(content['drawing']['data'])
-                        st.image(BytesIO(drawing_bytes), width=300)
+                        if 'url' in content['drawing']:
+                            # New format with Cloudinary URL
+                            st.image(content['drawing']['url'], width=300)
+                        else:
+                            # Legacy format with base64 data (for backward compatibility)
+                            drawing_bytes = base64.b64decode(content['drawing']['data'])
+                            st.image(BytesIO(drawing_bytes), width=300)
                     
                     # Display audio content
                     if 'audio' in content:
-                        audio_bytes = base64.b64decode(content['audio']['data'])
-                        st.audio(audio_bytes, format=content['audio']['type'])
+                        if 'url' in content['audio']:
+                            # New format with Cloudinary URL
+                            st.audio(content['audio']['url'])
+                        else:
+                            # Legacy format with base64 data (for backward compatibility)
+                            audio_bytes = base64.b64decode(content['audio']['data'])
+                            st.audio(audio_bytes, format=content['audio']['type'])
     else:
-        st.info("No content yet. Add some content from the create page!")
+        # Show create button without the info message
+        pass
     
     # Create new content button at the bottom
     st.divider()
@@ -442,15 +560,21 @@ else:
             img_buffer = BytesIO()
             img_rgb.save(img_buffer, format='PNG')
             img_bytes = img_buffer.getvalue()
-            encoded = base64.b64encode(img_bytes).decode()
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            st.session_state.post_data['drawing'] = {
-                'name': f"drawing_{timestamp}.png",
-                'type': "image/png",
-                'data': encoded
-            }
-            has_drawing = True
+            filename = f"drawing_{timestamp}"
+            
+            # Upload to Cloudinary
+            with st.spinner("Uploading drawing..."):
+                drawing_url = upload_drawing_to_cloudinary(img_bytes, filename)
+                
+            if drawing_url:
+                st.session_state.post_data['drawing'] = {
+                    'name': f"{filename}.png",
+                    'type': "image/png",
+                    'url': drawing_url
+                }
+                has_drawing = True
         
         col1, col2 = st.columns(2)
         with col1:
@@ -506,16 +630,28 @@ else:
         if uploaded_image:
             st.image(uploaded_image, use_container_width=True)
             
-            # Save image immediately when uploaded
-            bytes_data = uploaded_image.getvalue()
-            encoded = base64.b64encode(bytes_data).decode()
+            # Check if we already have this image uploaded (compare filename)
+            current_filename = uploaded_image.name.split('.')[0]
+            existing_image = st.session_state.post_data.get('image', {})
             
-            st.session_state.post_data['image'] = {
-                'name': uploaded_image.name,
-                'type': uploaded_image.type,
-                'data': encoded
-            }
-            has_image = True
+            if 'url' not in existing_image or current_filename not in existing_image.get('name', ''):
+                # Upload to Cloudinary only if it's a new image
+                bytes_data = uploaded_image.getvalue()
+                
+                with st.spinner("Uploading image..."):
+                    image_url = upload_image_to_cloudinary(bytes_data, current_filename)
+                    
+                if image_url:
+                    st.session_state.post_data['image'] = {
+                        'name': uploaded_image.name,
+                        'type': uploaded_image.type,
+                        'url': image_url
+                    }
+            
+            # Image exists (either just uploaded or from previous upload)
+            if 'image' in st.session_state.post_data:
+                has_image = True
+            # If upload fails, user can try uploading again
         
         col1, col2 = st.columns(2)
         with col1:
@@ -544,17 +680,27 @@ else:
         if audio_input:
             st.audio(audio_input)
             
-            # Save audio immediately when recorded
-            bytes_data = audio_input.getvalue()
-            encoded = base64.b64encode(bytes_data).decode()
+            # Check if we already have audio uploaded (check if audio exists in session)
+            if 'audio' not in st.session_state.post_data:
+                # Upload to Cloudinary only once
+                bytes_data = audio_input.getvalue()
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"recording_{timestamp}"
+                
+                with st.spinner("Uploading audio..."):
+                    audio_url = upload_audio_to_cloudinary(bytes_data, filename)
+                    
+                if audio_url:
+                    st.session_state.post_data['audio'] = {
+                        'name': f"{filename}.wav",
+                        'type': "audio/wav",
+                        'url': audio_url
+                    }
             
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            st.session_state.post_data['audio'] = {
-                'name': f"recording_{timestamp}.wav",
-                'type': "audio/wav",
-                'data': encoded
-            }
-            has_audio = True
+            # Audio exists (either just uploaded or from previous upload)
+            if 'audio' in st.session_state.post_data:
+                has_audio = True
+            # If upload fails, user can try recording again
         
         col1, col2 = st.columns(2)
         with col1:
@@ -578,8 +724,7 @@ else:
                             'content': st.session_state.post_data.copy()
                         }
                         
-                        # Clear cache and show gallery immediately
-                        get_posts.clear()
+                        # Show gallery immediately - cache will refresh automatically due to shorter TTL
                         st.success("Your walk is being added to the gallery, please wait!")
                         go_to_gallery()
                         st.rerun()
