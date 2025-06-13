@@ -352,7 +352,7 @@ last_poem_generation = {}
 POEM_GENERATION_COOLDOWN = 10  # seconds between poem generations per user
 
 # Media upload functions
-def resize_image_if_needed(image_bytes, max_size_mb=2):
+def resize_image_if_needed(image_bytes, max_size_mb=1):  # Reduced to 1MB for mobile
     """Resize image if it's larger than max_size_mb"""
     try:
         # Convert bytes to image
@@ -365,21 +365,24 @@ def resize_image_if_needed(image_bytes, max_size_mb=2):
             return image_bytes, False  # No resize needed
         
         # Calculate new dimensions while maintaining aspect ratio
-        max_dimension = 1600  # Maximum width or height
+        # Smaller max dimension for mobile
+        max_dimension = 1200  # Reduced from 1600 for mobile
         ratio = min(max_dimension / img.width, max_dimension / img.height)
         new_size = (int(img.width * ratio), int(img.height * ratio))
         
-        # Resize image
+        # Resize image with mobile-optimized settings
         img = img.resize(new_size, Image.Resampling.LANCZOS)
         
-        # Save to bytes with quality optimization
+        # Save to bytes with mobile-optimized settings
         output = BytesIO()
-        img.save(output, format=img.format or 'JPEG', quality=85, optimize=True)
+        # Use JPEG for better mobile compatibility and smaller size
+        img = img.convert('RGB')  # Convert to RGB for JPEG
+        img.save(output, format='JPEG', quality=80, optimize=True)  # Slightly lower quality for mobile
         resized_bytes = output.getvalue()
         
         # Log the size reduction
         new_size_mb = len(resized_bytes) / (1024 * 1024)
-        print(f"Resized image from {current_size_mb:.1f}MB to {new_size_mb:.1f}MB")
+        print(f"Resized image from {current_size_mb:.1f}MB to {new_size_mb:.1f}MB for mobile")
         
         return resized_bytes, True
     except Exception as e:
@@ -389,12 +392,7 @@ def resize_image_if_needed(image_bytes, max_size_mb=2):
 def upload_image_to_cloudinary(image_bytes, filename):
     """Upload image to Cloudinary and return URL"""
     max_retries = 3
-    retry_delay = 2  # seconds
-    
-    # Try to resize if image is large
-    image_bytes, was_resized = resize_image_if_needed(image_bytes)
-    if was_resized:
-        print("Image was automatically resized for better upload reliability")
+    retry_delay = 5  # Increased delay between retries for mobile
     
     for attempt in range(max_retries):
         try:
@@ -417,7 +415,7 @@ def upload_image_to_cloudinary(image_bytes, filename):
                 return None
 
             try:
-                # Add timeout and retry settings to the upload
+                # Upload with longer timeout for mobile
                 result = cloudinary.uploader.upload(
                     image_bytes,
                     public_id=f"soundwalk/images/{filename}_{uuid.uuid4()}",
@@ -427,11 +425,11 @@ def upload_image_to_cloudinary(image_bytes, filename):
                     eager=[
                         {"quality": "auto:best", "fetch_format": "auto"}
                     ],
-                    timeout=30,  # 30 second timeout
-                    api_proxy=None,  # Disable proxy
-                    use_filename=True,  # Use original filename
-                    unique_filename=True,  # Add unique suffix
-                    overwrite=True  # Overwrite if exists
+                    timeout=120,  # Increased to 120 seconds for mobile
+                    api_proxy=None,
+                    use_filename=True,
+                    unique_filename=True,
+                    overwrite=True
                 )
                 print(f"Upload successful: {result.get('secure_url')}")
                 return result.get('secure_url')
