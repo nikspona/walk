@@ -24,4 +24,8 @@ data/
 .DS_Store
 Thumbs.db 
 
+# Environment variables (contains sensitive API keys)
 .env
+
+# Cloudinary cache
+.cloudinary/

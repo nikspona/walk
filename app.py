@@ -38,13 +38,30 @@ poet = Agent(
 # Set page config
 st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
 
+# Add after the imports
+WHATSAPP_GROUP_LINK = "https://chat.whatsapp.com/G2gS8w712Ty0kFhXJn3F07"  # Another Walk WhatsApp group
+
+def show_whatsapp_fallback():
+    """Show WhatsApp fallback message only for critical errors that affect media saving"""
+    st.error("⚠️ We're having trouble with the app. Please try again in a few minutes or join our WhatsApp group and share your walk with the community.")
+    st.markdown(f"""
+    <div style='text-align: center; padding: 20px; background-color: #1a1a1a; border-radius: 10px; margin: 20px 0; border: 1px solid #333;'>
+        <h3 style='color: #ffffff; margin-bottom: 15px;'>Join our WhatsApp Group</h3>
+        <p style='color: #cccccc; margin-bottom: 20px;'>Get updates and share your walk with the community</p>
+        <a href='{WHATSAPP_GROUP_LINK}' target='_blank' style='display: inline-block; background-color: #25D366; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin-top: 10px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'>
+            Join WhatsApp Group
+        </a>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+
 # Database configuration
 def get_database_url():
     """Get PostgreSQL database URL from environment"""
     postgres_url = os.environ.get('DATABASE_URL') or os.environ.get('POSTGRES_URL')
     
     if not postgres_url:
-        st.error("❌ DATABASE_URL environment variable is required!")
+        show_whatsapp_fallback()  # Make database URL missing a critical error
         st.stop()
     
     # Fix for some cloud providers that use postgres:// instead of postgresql://
@@ -63,9 +80,9 @@ def get_db_engine():
             database_url,
             pool_pre_ping=True,
             pool_recycle=300,
-            pool_size=20,  # Increased from default 5
-            max_overflow=30,  # Allow up to 50 total connections (20 + 30)
-            pool_timeout=30,  # Wait up to 30 seconds for a connection
+            pool_size=5,
+            max_overflow=5,
+            pool_timeout=30,
             connect_args={
                 "sslmode": "require",
                 "connect_timeout": 10
@@ -79,8 +96,8 @@ def get_db_engine():
         return engine
         
     except Exception as e:
-        st.error(f"❌ Database connection error: {e}")
-        st.stop()
+        show_whatsapp_fallback()  # Show WhatsApp fallback for any database connection error
+        return None
 
 def init_db():
     """Initialize PostgreSQL database tables"""
@@ -127,23 +144,25 @@ def init_db():
             return True
             
     except Exception as e:
-        st.error(f"Database initialization error: {e}")
-        st.stop()
+        show_whatsapp_fallback()
+        return False
 
 # Function to save a post
 def save_post(post):
     engine = get_db_engine()
     if engine is None:
+        show_whatsapp_fallback()
         return False
+    
+    # Track failed attempts in session state
+    if 'save_attempts' not in st.session_state:
+        st.session_state.save_attempts = 0
     
     max_retries = 3
     for attempt in range(max_retries):
         try:
             with engine.connect() as conn:
-                # Convert content dict to JSON string
                 content_json = json.dumps(post['content'])
-                
-                # Insert into database
                 conn.execute(
                     text("INSERT INTO posts (id, timestamp, datetime, content) VALUES (:id, :timestamp, :datetime, :content)"),
                     {
@@ -154,25 +173,33 @@ def save_post(post):
                     }
                 )
                 conn.commit()
+                # Reset save attempts on success
+                st.session_state.save_attempts = 0
                 return True
                 
         except Exception as e:
             if attempt < max_retries - 1:
-                # Clear the cached engine and try again
                 get_db_engine.clear()
                 continue
             else:
-                # Only show error on final attempt
+                # Increment failed attempts
+                st.session_state.save_attempts += 1
+                
+                # Show WhatsApp fallback after multiple save failures
+                if st.session_state.save_attempts >= 2:
+                    show_whatsapp_fallback()
+                else:
+                    st.error("❌ Failed to save your walk. Please try again.")
                 return False
     
     return False
 
 # Function to get all posts
-@st.cache_data(ttl=30, show_spinner=False)  # Reduced cache time to 30 seconds for more real-time updates
+@st.cache_data(ttl=30, show_spinner=False)
 def get_posts():
     engine = get_db_engine()
     if engine is None:
-        return []
+        show_whatsapp_fallback()  # Show WhatsApp fallback if no database connection
     
     max_retries = 3
     for attempt in range(max_retries):
@@ -193,20 +220,18 @@ def get_posts():
                         }
                         posts.append(post)
                     except json.JSONDecodeError as e:
-                        # Skip corrupted post silently
                         continue
                 
                 return posts
                 
         except Exception as e:
             if attempt < max_retries - 1:
-                # Clear the cached engine and try again
                 get_db_engine.clear()
                 continue
             else:
-                # Return empty list silently on final attempt
-                return []
+                show_whatsapp_fallback()  # Show WhatsApp fallback after all retries fail
     
+    show_whatsapp_fallback()  # Show WhatsApp fallback if we get here
     return []
 
 # Function to save a poem
@@ -294,7 +319,7 @@ def clear_all_poems():
             return True
             
     except Exception as e:
-        st.error(f"Error clearing poems: {e}")
+        show_whatsapp_fallback()
         return False
 
 # Initialize database on startup
@@ -324,15 +349,14 @@ def upload_image_to_cloudinary(image_bytes, filename):
             resource_type="image",
             quality="auto:best",
             fetch_format="auto",
-            # Remove size limits - preserve original dimensions
-            # Only compress if image is extremely large (over 4MB)
             eager=[
                 {"quality": "auto:best", "fetch_format": "auto"}
             ]
         )
         return result.get('secure_url')
     except Exception as e:
-        return None  # Silent failure
+        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        return None
 
 def upload_audio_to_cloudinary(audio_bytes, filename):
     """Upload audio to Cloudinary and return URL"""
@@ -340,11 +364,12 @@ def upload_audio_to_cloudinary(audio_bytes, filename):
         result = cloudinary.uploader.upload(
             audio_bytes,
             public_id=f"soundwalk/audio/{filename}_{uuid.uuid4()}",
-            resource_type="video"  # Cloudinary uses 'video' for audio files
+            resource_type="video"
         )
         return result.get('secure_url')
     except Exception as e:
-        return None  # Silent failure
+        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        return None
 
 def upload_drawing_to_cloudinary(image_bytes, filename):
     """Upload drawing to Cloudinary and return URL"""
@@ -354,15 +379,16 @@ def upload_drawing_to_cloudinary(image_bytes, filename):
             public_id=f"soundwalk/drawings/{filename}_{uuid.uuid4()}",
             resource_type="image",
             format="png",
-            quality="auto:best",  # Better quality for drawings
+            quality="auto:best",
             transformation=[
-                {"width": 800, "height": 800, "crop": "limit"},  # Preserve drawing quality
+                {"width": 800, "height": 800, "crop": "limit"},
                 {"quality": "auto:best"}
             ]
         )
         return result.get('secure_url')
     except Exception as e:
-        return None  # Silent failure
+        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        return None
 
 def reset_creation_flow():
     """Reset the creation flow to start over"""
@@ -425,13 +451,11 @@ if st.session_state.show_gallery:
         
         # Try to save in background
         if save_post(pending_post):
-            # Clear the pending post and refresh cache only for this user
             st.session_state.pending_post = None
-            # Use a more targeted cache refresh instead of clearing everything
             st.cache_data.clear()
         else:
-            st.error("❌ Failed to save your walk. Please try again.")
-            # Keep the pending post for retry
+            # Error message is now handled in save_post based on attempt count
+            pass  # Remove the generic error message since it's handled in save_post
     
     # Get posts from database
     posts = get_posts()
@@ -539,7 +563,7 @@ else:
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=3,
             stroke_color="#000000",
-            background_color="#808080",
+            background_color="#FFFFFF",
             background_image=None,
             update_streamlit=True,
             height=400,
@@ -724,7 +748,7 @@ else:
                             'content': st.session_state.post_data.copy()
                         }
                         
-                        # Show gallery immediately - cache will refresh automatically due to shorter TTL
+                        # Show gallery immediately
                         st.success("Your walk is being added to the gallery, please wait!")
                         go_to_gallery()
                         st.rerun()
