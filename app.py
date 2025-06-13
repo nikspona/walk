@@ -36,19 +36,7 @@ poet = Agent(
 )
 
 # Set page config
-st.set_page_config(
-    page_title="Soundwalk",
-    page_icon="📸",
-    layout="wide",
-    initial_sidebar_state="collapsed"  # Hide sidebar on mobile
-)
-
-# Configure Streamlit server settings
-st.set_option('server.maxUploadSize', 200)  # Increase max upload size to 200MB
-st.set_option('server.timeout', 300)  # Increase server timeout to 5 minutes
-st.set_option('server.enableCORS', True)  # Enable CORS for better mobile handling
-st.set_option('server.enableXsrfProtection', False)  # Disable XSRF for better mobile handling
-st.set_option('server.enableWebsocketCompression', True)  # Enable compression for mobile
+st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
 
 # Add custom CSS to ensure white canvas background
 st.markdown("""
@@ -58,14 +46,6 @@ st.markdown("""
     }
     canvas {
         background-color: white !important;
-    }
-    /* Hide Streamlit's connection message */
-    .stConnectionStatus {
-        display: none !important;
-    }
-    /* Hide Streamlit's loading spinner */
-    .stSpinner {
-        display: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -111,17 +91,13 @@ def get_db_engine():
         engine = create_engine(
             database_url,
             pool_pre_ping=True,
-            pool_recycle=180,  # Reduced to 3 minutes for faster reconnection
-            pool_size=10,      # Increased pool size
-            max_overflow=10,   # Increased max overflow
-            pool_timeout=60,   # Increased pool timeout
+            pool_recycle=300,
+            pool_size=5,
+            max_overflow=5,
+            pool_timeout=30,
             connect_args={
                 "sslmode": "require",
-                "connect_timeout": 30,  # Increased connection timeout
-                "keepalives": 1,        # Enable keepalive
-                "keepalives_idle": 30,  # Keepalive idle time
-                "keepalives_interval": 10,  # Keepalive interval
-                "keepalives_count": 5   # Number of keepalive packets
+                "connect_timeout": 10
             }
         )
         
@@ -376,121 +352,23 @@ last_poem_generation = {}
 POEM_GENERATION_COOLDOWN = 10  # seconds between poem generations per user
 
 # Media upload functions
-def resize_image_if_needed(image_bytes, max_size_mb=1):  # Reduced to 1MB for mobile
-    """Resize image if it's larger than max_size_mb"""
-    try:
-        # Convert bytes to image
-        img = Image.open(BytesIO(image_bytes))
-        
-        # Calculate current size in MB
-        current_size_mb = len(image_bytes) / (1024 * 1024)
-        
-        if current_size_mb <= max_size_mb:
-            return image_bytes, False  # No resize needed
-        
-        # Calculate new dimensions while maintaining aspect ratio
-        # Smaller max dimension for mobile
-        max_dimension = 1200  # Reduced from 1600 for mobile
-        ratio = min(max_dimension / img.width, max_dimension / img.height)
-        new_size = (int(img.width * ratio), int(img.height * ratio))
-        
-        # Resize image with mobile-optimized settings
-        img = img.resize(new_size, Image.Resampling.LANCZOS)
-        
-        # Save to bytes with mobile-optimized settings
-        output = BytesIO()
-        # Use JPEG for better mobile compatibility and smaller size
-        img = img.convert('RGB')  # Convert to RGB for JPEG
-        img.save(output, format='JPEG', quality=80, optimize=True)  # Slightly lower quality for mobile
-        resized_bytes = output.getvalue()
-        
-        # Log the size reduction
-        new_size_mb = len(resized_bytes) / (1024 * 1024)
-        print(f"Resized image from {current_size_mb:.1f}MB to {new_size_mb:.1f}MB for mobile")
-        
-        return resized_bytes, True
-    except Exception as e:
-        print(f"Error resizing image: {str(e)}")
-        return image_bytes, False  # Return original if resize fails
-
 def upload_image_to_cloudinary(image_bytes, filename):
     """Upload image to Cloudinary and return URL"""
-    max_retries = 5  # Increased retries
-    retry_delay = 10  # Increased delay between retries
-    
-    for attempt in range(max_retries):
-        try:
-            # Log file size for debugging
-            file_size_mb = len(image_bytes) / (1024 * 1024)
-            print(f"Attempt {attempt + 1}/{max_retries}: Uploading image: {filename}, size: {file_size_mb:.2f}MB")
-
-            # Check file size (Cloudinary limit is 100MB)
-            if len(image_bytes) > 100 * 1024 * 1024:  # 100MB in bytes
-                st.error("Image is too large. Please use an image smaller than 100MB.")
-                return None
-
-            # Try to validate image format
-            try:
-                img = Image.open(BytesIO(image_bytes))
-                print(f"Image format validated: {img.format}, size: {img.size}")
-            except Exception as e:
-                print(f"Image validation failed: {str(e)}")
-                st.error("Invalid image format. Please use PNG, JPG, or JPEG.")
-                return None
-
-            try:
-                # Upload with longer timeout for mobile
-                result = cloudinary.uploader.upload(
-                    image_bytes,
-                    public_id=f"soundwalk/images/{filename}_{uuid.uuid4()}",
-                    resource_type="image",
-                    quality="auto:best",
-                    fetch_format="auto",
-                    eager=[
-                        {"quality": "auto:best", "fetch_format": "auto"}
-                    ],
-                    timeout=180,  # Increased to 3 minutes for mobile
-                    api_proxy=None,
-                    use_filename=True,
-                    unique_filename=True,
-                    overwrite=True,
-                    chunk_size=6000000,  # 6MB chunks for better mobile upload
-                    eager_async=True,    # Async processing for better performance
-                    invalidate=True      # Invalidate CDN cache
-                )
-                print(f"Upload successful: {result.get('secure_url')}")
-                return result.get('secure_url')
-            except cloudinary.exceptions.Error as e:
-                print(f"Cloudinary upload error (attempt {attempt + 1}): {str(e)}")
-                if attempt < max_retries - 1:
-                    print(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    continue
-                
-                # Handle specific Cloudinary errors
-                if "File size too large" in str(e):
-                    st.error("Image is too large. Please use a smaller image.")
-                elif "Invalid image file" in str(e):
-                    st.error("Invalid image format. Please use PNG, JPG, or JPEG.")
-                elif "Authentication required" in str(e):
-                    st.error("Upload service is temporarily unavailable. Please try again in a few minutes.")
-                elif "Network" in str(e) or "timeout" in str(e).lower():
-                    st.error("Network error. Please check your connection and try again. If the problem persists, try using a different network or WiFi connection.")
-                else:
-                    st.error("Failed to upload image. Please try again or use a different image.")
-                return None
-        except Exception as e:
-            print(f"Unexpected error during upload (attempt {attempt + 1}): {str(e)}")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                continue
-            show_whatsapp_fallback()  # Show WhatsApp fallback for any other errors
-            return None
-    
-    # If we get here, all retries failed
-    st.error("Failed to upload after multiple attempts. Please try again later.")
-    return None
+    try:
+        result = cloudinary.uploader.upload(
+            image_bytes,
+            public_id=f"soundwalk/images/{filename}_{uuid.uuid4()}",
+            resource_type="image",
+            quality="auto:best",
+            fetch_format="auto",
+            eager=[
+                {"quality": "auto:best", "fetch_format": "auto"}
+            ]
+        )
+        return result.get('secure_url')
+    except Exception as e:
+        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        return None
 
 def upload_audio_to_cloudinary(audio_bytes, filename):
     """Upload audio to Cloudinary and return URL"""
