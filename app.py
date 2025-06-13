@@ -352,23 +352,120 @@ last_poem_generation = {}
 POEM_GENERATION_COOLDOWN = 10  # seconds between poem generations per user
 
 # Media upload functions
+def resize_image_if_needed(image_bytes, max_size_mb=2):
+    """Resize image if it's larger than max_size_mb"""
+    try:
+        # Convert bytes to image
+        img = Image.open(BytesIO(image_bytes))
+        
+        # Calculate current size in MB
+        current_size_mb = len(image_bytes) / (1024 * 1024)
+        
+        if current_size_mb <= max_size_mb:
+            return image_bytes, False  # No resize needed
+        
+        # Calculate new dimensions while maintaining aspect ratio
+        max_dimension = 1600  # Maximum width or height
+        ratio = min(max_dimension / img.width, max_dimension / img.height)
+        new_size = (int(img.width * ratio), int(img.height * ratio))
+        
+        # Resize image
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Save to bytes with quality optimization
+        output = BytesIO()
+        img.save(output, format=img.format or 'JPEG', quality=85, optimize=True)
+        resized_bytes = output.getvalue()
+        
+        # Log the size reduction
+        new_size_mb = len(resized_bytes) / (1024 * 1024)
+        print(f"Resized image from {current_size_mb:.1f}MB to {new_size_mb:.1f}MB")
+        
+        return resized_bytes, True
+    except Exception as e:
+        print(f"Error resizing image: {str(e)}")
+        return image_bytes, False  # Return original if resize fails
+
 def upload_image_to_cloudinary(image_bytes, filename):
     """Upload image to Cloudinary and return URL"""
-    try:
-        result = cloudinary.uploader.upload(
-            image_bytes,
-            public_id=f"soundwalk/images/{filename}_{uuid.uuid4()}",
-            resource_type="image",
-            quality="auto:best",
-            fetch_format="auto",
-            eager=[
-                {"quality": "auto:best", "fetch_format": "auto"}
-            ]
-        )
-        return result.get('secure_url')
-    except Exception as e:
-        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
-        return None
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    # Try to resize if image is large
+    image_bytes, was_resized = resize_image_if_needed(image_bytes)
+    if was_resized:
+        print("Image was automatically resized for better upload reliability")
+    
+    for attempt in range(max_retries):
+        try:
+            # Log file size for debugging
+            file_size_mb = len(image_bytes) / (1024 * 1024)
+            print(f"Attempt {attempt + 1}/{max_retries}: Uploading image: {filename}, size: {file_size_mb:.2f}MB")
+
+            # Check file size (Cloudinary limit is 100MB)
+            if len(image_bytes) > 100 * 1024 * 1024:  # 100MB in bytes
+                st.error("Image is too large. Please use an image smaller than 100MB.")
+                return None
+
+            # Try to validate image format
+            try:
+                img = Image.open(BytesIO(image_bytes))
+                print(f"Image format validated: {img.format}, size: {img.size}")
+            except Exception as e:
+                print(f"Image validation failed: {str(e)}")
+                st.error("Invalid image format. Please use PNG, JPG, or JPEG.")
+                return None
+
+            try:
+                # Add timeout and retry settings to the upload
+                result = cloudinary.uploader.upload(
+                    image_bytes,
+                    public_id=f"soundwalk/images/{filename}_{uuid.uuid4()}",
+                    resource_type="image",
+                    quality="auto:best",
+                    fetch_format="auto",
+                    eager=[
+                        {"quality": "auto:best", "fetch_format": "auto"}
+                    ],
+                    timeout=30,  # 30 second timeout
+                    api_proxy=None,  # Disable proxy
+                    use_filename=True,  # Use original filename
+                    unique_filename=True,  # Add unique suffix
+                    overwrite=True  # Overwrite if exists
+                )
+                print(f"Upload successful: {result.get('secure_url')}")
+                return result.get('secure_url')
+            except cloudinary.exceptions.Error as e:
+                print(f"Cloudinary upload error (attempt {attempt + 1}): {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                
+                # Handle specific Cloudinary errors
+                if "File size too large" in str(e):
+                    st.error("Image is too large. Please use a smaller image.")
+                elif "Invalid image file" in str(e):
+                    st.error("Invalid image format. Please use PNG, JPG, or JPEG.")
+                elif "Authentication required" in str(e):
+                    st.error("Upload service is temporarily unavailable. Please try again in a few minutes.")
+                elif "Network" in str(e) or "timeout" in str(e).lower():
+                    st.error("Network error. Please check your connection and try again.")
+                else:
+                    st.error("Failed to upload image. Please try again or use a different image.")
+                return None
+        except Exception as e:
+            print(f"Unexpected error during upload (attempt {attempt + 1}): {str(e)}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                continue
+            show_whatsapp_fallback()  # Show WhatsApp fallback for any other errors
+            return None
+    
+    # If we get here, all retries failed
+    st.error("Failed to upload after multiple attempts. Please try again later.")
+    return None
 
 def upload_audio_to_cloudinary(audio_bytes, filename):
     """Upload audio to Cloudinary and return URL"""
