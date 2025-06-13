@@ -38,6 +38,18 @@ poet = Agent(
 # Set page config
 st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
 
+# Add custom CSS to ensure white canvas background
+st.markdown("""
+<style>
+    .stCanvas {
+        background-color: white !important;
+    }
+    canvas {
+        background-color: white !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Add after the imports
 WHATSAPP_GROUP_LINK = "https://chat.whatsapp.com/G2gS8w712Ty0kFhXJn3F07"  # Another Walk WhatsApp group
 
