@@ -36,7 +36,19 @@ poet = Agent(
 )
 
 # Set page config
-st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
+st.set_page_config(
+    page_title="Soundwalk",
+    page_icon="📸",
+    layout="wide",
+    initial_sidebar_state="collapsed"  # Hide sidebar on mobile
+)
+
+# Configure Streamlit server settings
+st.set_option('server.maxUploadSize', 200)  # Increase max upload size to 200MB
+st.set_option('server.timeout', 300)  # Increase server timeout to 5 minutes
+st.set_option('server.enableCORS', True)  # Enable CORS for better mobile handling
+st.set_option('server.enableXsrfProtection', False)  # Disable XSRF for better mobile handling
+st.set_option('server.enableWebsocketCompression', True)  # Enable compression for mobile
 
 # Add custom CSS to ensure white canvas background
 st.markdown("""
@@ -46,6 +58,14 @@ st.markdown("""
     }
     canvas {
         background-color: white !important;
+    }
+    /* Hide Streamlit's connection message */
+    .stConnectionStatus {
+        display: none !important;
+    }
+    /* Hide Streamlit's loading spinner */
+    .stSpinner {
+        display: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -91,13 +111,17 @@ def get_db_engine():
         engine = create_engine(
             database_url,
             pool_pre_ping=True,
-            pool_recycle=300,
-            pool_size=5,
-            max_overflow=5,
-            pool_timeout=30,
+            pool_recycle=180,  # Reduced to 3 minutes for faster reconnection
+            pool_size=10,      # Increased pool size
+            max_overflow=10,   # Increased max overflow
+            pool_timeout=60,   # Increased pool timeout
             connect_args={
                 "sslmode": "require",
-                "connect_timeout": 10
+                "connect_timeout": 30,  # Increased connection timeout
+                "keepalives": 1,        # Enable keepalive
+                "keepalives_idle": 30,  # Keepalive idle time
+                "keepalives_interval": 10,  # Keepalive interval
+                "keepalives_count": 5   # Number of keepalive packets
             }
         )
         
@@ -391,8 +415,8 @@ def resize_image_if_needed(image_bytes, max_size_mb=1):  # Reduced to 1MB for mo
 
 def upload_image_to_cloudinary(image_bytes, filename):
     """Upload image to Cloudinary and return URL"""
-    max_retries = 3
-    retry_delay = 5  # Increased delay between retries for mobile
+    max_retries = 5  # Increased retries
+    retry_delay = 10  # Increased delay between retries
     
     for attempt in range(max_retries):
         try:
@@ -425,11 +449,14 @@ def upload_image_to_cloudinary(image_bytes, filename):
                     eager=[
                         {"quality": "auto:best", "fetch_format": "auto"}
                     ],
-                    timeout=120,  # Increased to 120 seconds for mobile
+                    timeout=180,  # Increased to 3 minutes for mobile
                     api_proxy=None,
                     use_filename=True,
                     unique_filename=True,
-                    overwrite=True
+                    overwrite=True,
+                    chunk_size=6000000,  # 6MB chunks for better mobile upload
+                    eager_async=True,    # Async processing for better performance
+                    invalidate=True      # Invalidate CDN cache
                 )
                 print(f"Upload successful: {result.get('secure_url')}")
                 return result.get('secure_url')
@@ -448,7 +475,7 @@ def upload_image_to_cloudinary(image_bytes, filename):
                 elif "Authentication required" in str(e):
                     st.error("Upload service is temporarily unavailable. Please try again in a few minutes.")
                 elif "Network" in str(e) or "timeout" in str(e).lower():
-                    st.error("Network error. Please check your connection and try again.")
+                    st.error("Network error. Please check your connection and try again. If the problem persists, try using a different network or WiFi connection.")
                 else:
                     st.error("Failed to upload image. Please try again or use a different image.")
                 return None
