@@ -82,7 +82,7 @@ def get_database_url():
     
     return postgres_url
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_db_engine():
     """Get SQLAlchemy engine for PostgreSQL"""
     try:
@@ -101,7 +101,7 @@ def get_db_engine():
             }
         )
         
-        # Test the connection
+        # Test the connection silently
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         
