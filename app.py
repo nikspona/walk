@@ -31,7 +31,6 @@ cloudinary.config(
 
 poet = Agent(
     model="gpt-4o-mini",
-    api_key=os.getenv("OPENAI_API_KEY"),
     system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using those provided words. Use as few other words to connect the given words as possible. It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should contain all the languages of the words provided by the user, you can use several languages in one poem. ",
 )
 
