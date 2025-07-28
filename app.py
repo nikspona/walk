@@ -72,12 +72,17 @@ def get_database_url():
     postgres_url = os.environ.get('DATABASE_URL') or os.environ.get('POSTGRES_URL')
     
     if not postgres_url:
+        print("No database URL found")
         show_whatsapp_fallback()  # Make database URL missing a critical error
         st.stop()
     
     # Fix for some cloud providers that use postgres:// instead of postgresql://
     if postgres_url.startswith('postgres://'):
         postgres_url = postgres_url.replace('postgres://', 'postgresql://', 1)
+    
+    # Fix for malformed hostnames with extra 'db@' prefix
+    if '@db@' in postgres_url:
+        postgres_url = postgres_url.replace('@db@', '@')
     
     return postgres_url
 
@@ -107,6 +112,7 @@ def get_db_engine():
         return engine
         
     except Exception as e:
+        print("Database connection error:", e)
         show_whatsapp_fallback()  # Show WhatsApp fallback for any database connection error
         return None
 
@@ -155,6 +161,7 @@ def init_db():
             return True
             
     except Exception as e:
+        print("Database initialization error:", e)
         show_whatsapp_fallback()
         return False
 
@@ -162,6 +169,7 @@ def init_db():
 def save_post(post):
     engine = get_db_engine()
     if engine is None:
+        print("No engine")
         show_whatsapp_fallback()
         return False
     
@@ -198,6 +206,7 @@ def save_post(post):
                 
                 # Show WhatsApp fallback after multiple save failures
                 if st.session_state.save_attempts >= 2:
+                    print("Cannot save post")
                     show_whatsapp_fallback()
                 else:
                     st.error("❌ Failed to save your walk. Please try again.")
@@ -210,6 +219,7 @@ def save_post(post):
 def get_posts():
     engine = get_db_engine()
     if engine is None:
+        print("No engine")
         show_whatsapp_fallback()  # Show WhatsApp fallback if no database connection
     
     max_retries = 3
@@ -366,6 +376,7 @@ def upload_image_to_cloudinary(image_bytes, filename):
         )
         return result.get('secure_url')
     except Exception as e:
+        print("Image upload error:", e)
         show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
         return None
 
