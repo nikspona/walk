@@ -3,6 +3,8 @@ import os
 import base64
 import json
 import uuid
+import logging
+import re
 from datetime import datetime
 from io import BytesIO
 from streamlit_drawable_canvas import st_canvas
@@ -18,8 +20,18 @@ import cloudinary
 import cloudinary.uploader
 from cloudinary.utils import cloudinary_url
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(name)s: %(message)s",
+    force=True,
+)
+
 # Load environment variables from .env file (for local development)
 load_dotenv()
+
+# Must be the first Streamlit command (required on Streamlit Cloud and older Streamlit versions).
+st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
 
 
 def _hydrate_env_from_streamlit_secrets():
@@ -43,6 +55,7 @@ def _hydrate_env_from_streamlit_secrets():
         "DATABASE_URL",
         "POSTGRES_URL",
         "OPENAI_API_KEY",
+        "CLOUDINARY_URL",
     ):
         try:
             if key in sec:
@@ -75,21 +88,104 @@ def _hydrate_env_from_streamlit_secrets():
 
 _hydrate_env_from_streamlit_secrets()
 
-# Configure Cloudinary
-cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True
-)
+
+def _cloudinary_values_from_secrets():
+    """Read Cloudinary credentials from st.secrets (flat keys or [cloudinary] section)."""
+    n = k = s = None
+    try:
+        sec = st.secrets
+    except Exception:
+        return None, None, None
+    try:
+        if "CLOUDINARY_CLOUD_NAME" in sec:
+            n = str(sec["CLOUDINARY_CLOUD_NAME"]).strip()
+        if "CLOUDINARY_API_KEY" in sec:
+            k = str(sec["CLOUDINARY_API_KEY"]).strip()
+        if "CLOUDINARY_API_SECRET" in sec:
+            s = str(sec["CLOUDINARY_API_SECRET"]).strip()
+    except Exception:
+        pass
+    if not (n and k and s):
+        try:
+            if "cloudinary" in sec:
+                c = sec["cloudinary"]
+                for env_key, alt in (
+                    ("CLOUDINARY_CLOUD_NAME", ("CLOUDINARY_CLOUD_NAME", "cloud_name")),
+                    ("CLOUDINARY_API_KEY", ("CLOUDINARY_API_KEY", "api_key")),
+                    ("CLOUDINARY_API_SECRET", ("CLOUDINARY_API_SECRET", "api_secret")),
+                ):
+                    val = None
+                    for name in alt:
+                        try:
+                            if name in c:
+                                val = str(c[name]).strip()
+                                break
+                        except Exception:
+                            continue
+                    if env_key == "CLOUDINARY_CLOUD_NAME":
+                        n = n or val
+                    elif env_key == "CLOUDINARY_API_KEY":
+                        k = k or val
+                    else:
+                        s = s or val
+        except Exception:
+            pass
+    return n, k, s
+
+
+def _parse_cloudinary_url(url):
+    """Parse cloudinary://api_key:api_secret@cloud_name from dashboard 'API Environment variable'."""
+    if not url or not isinstance(url, str):
+        return None, None, None
+    url = url.strip()
+    m = re.match(r"^cloudinary://([^:]+):([^@]+)@([^/]+)/?$", url)
+    if not m:
+        return None, None, None
+    api_key, api_secret, cloud_name = m.group(1), m.group(2), m.group(3)
+    return cloud_name.strip(), api_key.strip(), api_secret.strip()
+
+
+def ensure_cloudinary_config():
+    """Apply Cloudinary SDK config from env (after hydration) or st.secrets. Call before each upload."""
+    n = (os.getenv("CLOUDINARY_CLOUD_NAME") or "").strip()
+    k = (os.getenv("CLOUDINARY_API_KEY") or "").strip()
+    s = (os.getenv("CLOUDINARY_API_SECRET") or "").strip()
+    if not (n and k and s):
+        cu = (os.getenv("CLOUDINARY_URL") or "").strip()
+        pn, pk, ps = _parse_cloudinary_url(cu)
+        if pn and pk and ps:
+            n, k, s = pn, pk, ps
+    if not (n and k and s):
+        sn, sk, ss = _cloudinary_values_from_secrets()
+        n = n or (sn or "")
+        k = k or (sk or "")
+        s = s or (ss or "")
+    if not (n and k and s):
+        try:
+            if "CLOUDINARY_URL" in st.secrets:
+                pn, pk, ps = _parse_cloudinary_url(str(st.secrets["CLOUDINARY_URL"]))
+                if pn and pk and ps:
+                    n, k, s = n or pn, k or pk, s or ps
+        except Exception:
+            pass
+    if n and k and s:
+        cloudinary.config(cloud_name=n, api_key=k, api_secret=s, secure=True)
+        return True
+    logger.warning(
+        "Cloudinary credentials missing (cloud_name=%s api_key=%s api_secret=%s)",
+        bool(n),
+        bool(k),
+        bool(s),
+    )
+    return False
+
+
+ensure_cloudinary_config()
 
 poet = Agent(
     model="gpt-4o-mini",
     system_prompt="You are a poet. You write poetry. You will be given a word or a list of words and you will write a poem using those provided words. Use as few other words to connect the given words as possible. It should be a short abstract avant-garde concise poem, no need for rhyming. The words are collected from a soundwalk that people in diffrent cities around the world did together. Each persong collected words from their own walks. The poem should be a reflection of the common experience of the walk. Your style should be like early 20th century Ukrainian avant-garde poetry. The poem should contain all the languages of the words provided by the user, you can use several languages in one poem. ",
 )
-
-# Set page config
-st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
 
 # Add custom CSS to ensure white canvas background
 st.markdown("""
@@ -417,6 +513,12 @@ POEM_GENERATION_COOLDOWN = 10  # seconds between poem generations per user
 # Media upload functions
 def upload_image_to_cloudinary(image_bytes, filename):
     """Upload image to Cloudinary and return URL"""
+    if not ensure_cloudinary_config():
+        st.error(
+            "Cloudinary is not configured. In Streamlit Cloud: Settings → Secrets — add "
+            "`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` (exact names, TOML)."
+        )
+        return None
     try:
         result = cloudinary.uploader.upload(
             image_bytes,
@@ -430,12 +532,18 @@ def upload_image_to_cloudinary(image_bytes, filename):
         )
         return result.get('secure_url')
     except Exception as e:
-        print("Image upload error:", e)
+        logger.exception("Cloudinary image upload failed: %s", e)
         show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
         return None
 
 def upload_audio_to_cloudinary(audio_bytes, filename):
     """Upload audio to Cloudinary and return URL"""
+    if not ensure_cloudinary_config():
+        st.error(
+            "Cloudinary is not configured. In Streamlit Cloud: Settings → Secrets — add "
+            "`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`."
+        )
+        return None
     try:
         result = cloudinary.uploader.upload(
             audio_bytes,
@@ -444,11 +552,18 @@ def upload_audio_to_cloudinary(audio_bytes, filename):
         )
         return result.get('secure_url')
     except Exception as e:
+        logger.exception("Cloudinary audio upload failed: %s", e)
         show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
         return None
 
 def upload_drawing_to_cloudinary(image_bytes, filename):
     """Upload drawing to Cloudinary and return URL"""
+    if not ensure_cloudinary_config():
+        st.error(
+            "Cloudinary is not configured. In Streamlit Cloud: Settings → Secrets — add "
+            "`CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`."
+        )
+        return None
     try:
         result = cloudinary.uploader.upload(
             image_bytes,
@@ -463,6 +578,7 @@ def upload_drawing_to_cloudinary(image_bytes, filename):
         )
         return result.get('secure_url')
     except Exception as e:
+        logger.exception("Cloudinary drawing upload failed: %s", e)
         show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
         return None
 
