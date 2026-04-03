@@ -219,6 +219,11 @@ def render_soundwalk_diagnostics_panel():
     with st.expander("Soundwalk diagnostics — connection & keys", expanded=True):
         db_ok = bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL"))
         st.write("**DATABASE_URL / POSTGRES_URL:**", "set" if db_ok else "missing")
+        _db_live_ok, _db_live_err = _live_db_smoke_test()
+        st.write(
+            "**DB live check (SELECT 1):**",
+            "ok" if _db_live_ok else f"FAILED — {_db_live_err}",
+        )
         st.write("**Cloudinary config:**", "ok" if ensure_cloudinary_config() else "missing")
         st.write("**OPENAI_API_KEY:**", "set" if os.environ.get("OPENAI_API_KEY") else "missing")
         _err = st.session_state.get("_diag_last_error") or ""
@@ -291,6 +296,42 @@ def get_database_url():
         postgres_url = postgres_url.replace('@db@', '@')
     
     return postgres_url
+
+
+def _live_db_smoke_test():
+    """Returns (True, None) or (False, message). Does not call st.stop — for diagnostics only."""
+    u = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
+    if not u:
+        return False, "No DATABASE_URL or POSTGRES_URL in environment"
+    if u.startswith("postgres://"):
+        u = u.replace("postgres://", "postgresql://", 1)
+    if "@db@" in u:
+        u = u.replace("@db@", "@")
+    try:
+        eng = create_engine(
+            u,
+            pool_pre_ping=True,
+            connect_args={"sslmode": "require", "connect_timeout": 10},
+        )
+        with eng.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        eng.dispose()
+        return True, None
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _handle_gallery_db_error(exc: BaseException):
+    """get_posts must not call st.stop inside @st.cache_data; errors are handled here."""
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    st.session_state["_diag_last_error"] = tb
+    if diagnostics_enabled():
+        st.error(f"Could not load data from the database: {exc}")
+        with st.expander("Full traceback", expanded=True):
+            st.code(tb)
+        st.stop()
+    show_whatsapp_fallback()
+
 
 @st.cache_resource(show_spinner=False)
 def get_db_engine():
@@ -423,43 +464,43 @@ def save_post(post):
 # Function to get all posts
 @st.cache_data(ttl=30, show_spinner=False)
 def get_posts():
+    """Load posts from DB. On failure raises RuntimeError (do not call st.stop here — @st.cache_data breaks that)."""
     engine = get_db_engine()
     if engine is None:
-        print("No engine")
-        show_whatsapp_fallback()  # Show WhatsApp fallback if no database connection
-    
-    max_retries = 3
-    for attempt in range(max_retries):
+        raise RuntimeError("Database engine is not available.")
+
+    last_err = None
+    for attempt in range(3):
         try:
             with engine.connect() as conn:
-                # Get all posts ordered by timestamp (newest first)
-                result = conn.execute(text("SELECT id, timestamp, datetime, content FROM posts ORDER BY timestamp DESC"))
+                result = conn.execute(
+                    text("SELECT id, timestamp, datetime, content FROM posts ORDER BY timestamp DESC")
+                )
                 rows = result.fetchall()
-                
+
                 posts = []
                 for row in rows:
                     try:
                         post = {
-                            'id': row[0],
-                            'timestamp': row[1],
-                            'datetime': row[2],
-                            'content': json.loads(row[3])
+                            "id": row[0],
+                            "timestamp": row[1],
+                            "datetime": row[2],
+                            "content": json.loads(row[3]),
                         }
                         posts.append(post)
-                    except json.JSONDecodeError as e:
+                    except json.JSONDecodeError:
                         continue
-                
+
                 return posts
-                
+
         except Exception as e:
-            if attempt < max_retries - 1:
+            last_err = e
+            if attempt < 2:
                 get_db_engine.clear()
                 continue
-            else:
-                show_whatsapp_fallback()  # Show WhatsApp fallback after all retries fail
-    
-    show_whatsapp_fallback()  # Show WhatsApp fallback if we get here
-    return []
+            raise RuntimeError(f"Could not read posts after 3 attempts: {e}") from e
+
+    raise RuntimeError(f"Could not read posts: {last_err}") from last_err
 
 # Function to save a poem
 def save_poem(words_list, poem_text):
@@ -706,9 +747,12 @@ if st.session_state.show_gallery:
             # Error message is now handled in save_post based on attempt count
             pass  # Remove the generic error message since it's handled in save_post
     
-    # Get posts from database
-    posts = get_posts()
-    
+    # Get posts from database (errors handled outside @st.cache_data — see get_posts)
+    try:
+        posts = get_posts()
+    except RuntimeError as e:
+        _handle_gallery_db_error(e)
+
     # Display posts with words grouped together
     if posts:
         # Separate words from other content
@@ -1008,7 +1052,12 @@ else:
                 st.caption("Record audio to finish")
     
     # Show existing gallery button if there are posts
-    if get_posts():
+    try:
+        _posts_for_button = get_posts()
+    except RuntimeError as e:
+        _handle_gallery_db_error(e)
+
+    if _posts_for_button:
         st.divider()
         if st.button("View Existing Gallery 🖼️", use_container_width=True):
             go_to_gallery()
