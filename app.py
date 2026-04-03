@@ -5,6 +5,7 @@ import json
 import uuid
 import logging
 import re
+import traceback
 from datetime import datetime
 from io import BytesIO
 from streamlit_drawable_canvas import st_canvas
@@ -181,6 +182,33 @@ def ensure_cloudinary_config():
 
 
 ensure_cloudinary_config()
+
+
+def diagnostics_enabled():
+    """When true, show errors in-app (Streamlit Cloud often does not show Python logs). Enable via secret or env."""
+    if str(os.getenv("SOUNDWALK_DIAGNOSTICS", "")).strip().lower() in ("1", "true", "yes"):
+        return True
+    try:
+        if "SOUNDWALK_DIAGNOSTICS" in st.secrets:
+            v = st.secrets["SOUNDWALK_DIAGNOSTICS"]
+            if v is True:
+                return True
+            return str(v).strip().lower() in ("1", "true", "yes")
+    except Exception:
+        pass
+    return False
+
+
+def _fail_upload_with_optional_traceback(message: str):
+    """Record traceback for sidebar; if diagnostics on, show details then stop (else generic WhatsApp)."""
+    st.session_state["_diag_last_error"] = message
+    if diagnostics_enabled():
+        st.error("Upload / media error (diagnostics on)")
+        with st.expander("Details (remove SOUNDWALK_DIAGNOSTICS from secrets when done)", expanded=True):
+            st.code(message, language="text")
+        st.stop()
+    show_whatsapp_fallback()
+
 
 poet = Agent(
     model="gpt-4o-mini",
@@ -533,7 +561,7 @@ def upload_image_to_cloudinary(image_bytes, filename):
         return result.get('secure_url')
     except Exception as e:
         logger.exception("Cloudinary image upload failed: %s", e)
-        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        _fail_upload_with_optional_traceback(traceback.format_exc())
         return None
 
 def upload_audio_to_cloudinary(audio_bytes, filename):
@@ -553,7 +581,7 @@ def upload_audio_to_cloudinary(audio_bytes, filename):
         return result.get('secure_url')
     except Exception as e:
         logger.exception("Cloudinary audio upload failed: %s", e)
-        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        _fail_upload_with_optional_traceback(traceback.format_exc())
         return None
 
 def upload_drawing_to_cloudinary(image_bytes, filename):
@@ -579,7 +607,7 @@ def upload_drawing_to_cloudinary(image_bytes, filename):
         return result.get('secure_url')
     except Exception as e:
         logger.exception("Cloudinary drawing upload failed: %s", e)
-        show_whatsapp_fallback()  # Show WhatsApp fallback for any upload error
+        _fail_upload_with_optional_traceback(traceback.format_exc())
         return None
 
 def reset_creation_flow():
@@ -955,4 +983,18 @@ else:
         st.divider()
         if st.button("View Existing Gallery 🖼️", use_container_width=True):
             go_to_gallery()
-            st.rerun() 
+            st.rerun()
+
+# Streamlit Cloud log viewer often only shows deploy output — use in-app diagnostics when debugging.
+if diagnostics_enabled():
+    with st.sidebar:
+        st.divider()
+        with st.expander("Soundwalk diagnostics", expanded=False):
+            db_ok = bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL"))
+            st.write("**DATABASE_URL / POSTGRES_URL:**", "set" if db_ok else "missing")
+            st.write("**Cloudinary config:**", "ok" if ensure_cloudinary_config() else "missing")
+            st.write("**OPENAI_API_KEY:**", "set" if os.environ.get("OPENAI_API_KEY") else "missing")
+            _err = st.session_state.get("_diag_last_error") or ""
+            if _err:
+                st.caption("Last recorded error:")
+                st.code(_err[:8000], language="text")
