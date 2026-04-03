@@ -21,6 +21,60 @@ from cloudinary.utils import cloudinary_url
 # Load environment variables from .env file (for local development)
 load_dotenv()
 
+
+def _hydrate_env_from_streamlit_secrets():
+    """Streamlit Cloud exposes config via st.secrets, not os.environ. Copy into env for libraries that use getenv."""
+    try:
+        sec = st.secrets
+    except Exception:
+        return
+
+    def setdefault_env(name, value):
+        if value is None or os.environ.get(name):
+            return
+        s = str(value).strip()
+        if s:
+            os.environ[name] = s
+
+    for key in (
+        "CLOUDINARY_CLOUD_NAME",
+        "CLOUDINARY_API_KEY",
+        "CLOUDINARY_API_SECRET",
+        "DATABASE_URL",
+        "POSTGRES_URL",
+        "OPENAI_API_KEY",
+    ):
+        try:
+            if key in sec:
+                setdefault_env(key, sec[key])
+        except Exception:
+            continue
+
+    # Optional TOML section: [cloudinary] cloud_name = "..." etc.
+    try:
+        if "cloudinary" in sec:
+            c = sec["cloudinary"]
+            pairs = (
+                ("CLOUDINARY_CLOUD_NAME", ("CLOUDINARY_CLOUD_NAME", "cloud_name")),
+                ("CLOUDINARY_API_KEY", ("CLOUDINARY_API_KEY", "api_key")),
+                ("CLOUDINARY_API_SECRET", ("CLOUDINARY_API_SECRET", "api_secret")),
+            )
+            for env_key, alt_names in pairs:
+                if os.environ.get(env_key):
+                    continue
+                for n in alt_names:
+                    try:
+                        if n in c:
+                            setdefault_env(env_key, c[n])
+                            break
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+
+
+_hydrate_env_from_streamlit_secrets()
+
 # Configure Cloudinary
 cloudinary.config(
     cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
