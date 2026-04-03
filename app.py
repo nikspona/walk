@@ -31,8 +31,15 @@ logging.basicConfig(
 # Load environment variables from .env file (for local development)
 load_dotenv()
 
+_diag_sidebar = str(os.getenv("SOUNDWALK_DIAGNOSTICS", "")).strip().lower() in ("1", "true", "yes")
+
 # Must be the first Streamlit command (required on Streamlit Cloud and older Streamlit versions).
-st.set_page_config(page_title="Soundwalk", page_icon="📸", layout="wide")
+st.set_page_config(
+    page_title="Soundwalk",
+    page_icon="📸",
+    layout="wide",
+    initial_sidebar_state="expanded" if _diag_sidebar else "auto",
+)
 
 
 def _hydrate_env_from_streamlit_secrets():
@@ -197,6 +204,27 @@ def diagnostics_enabled():
     except Exception:
         pass
     return False
+
+
+def render_soundwalk_diagnostics_panel():
+    """Show diagnostics in the main area (and touch the sidebar) so it is visible before any st.stop()."""
+    if not diagnostics_enabled():
+        return
+    st.sidebar.markdown("**Diagnostics**")
+    st.sidebar.caption("SOUNDWALK_DIAGNOSTICS on — scroll main page for details.")
+    st.warning(
+        "**Diagnostics mode is on.** Data below is not secret values, only whether keys exist. "
+        "Remove `SOUNDWALK_DIAGNOSTICS` from secrets when you are done."
+    )
+    with st.expander("Soundwalk diagnostics — connection & keys", expanded=True):
+        db_ok = bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL"))
+        st.write("**DATABASE_URL / POSTGRES_URL:**", "set" if db_ok else "missing")
+        st.write("**Cloudinary config:**", "ok" if ensure_cloudinary_config() else "missing")
+        st.write("**OPENAI_API_KEY:**", "set" if os.environ.get("OPENAI_API_KEY") else "missing")
+        _err = st.session_state.get("_diag_last_error") or ""
+        if _err:
+            st.caption("Last recorded error:")
+            st.code(_err[:8000], language="text")
 
 
 def _fail_upload_with_optional_traceback(message: str):
@@ -522,6 +550,7 @@ def clear_all_poems():
         return False
 
 # Initialize database on startup
+render_soundwalk_diagnostics_panel()
 init_db()
 
 # Initialize session state for multi-step flow
@@ -984,17 +1013,3 @@ else:
         if st.button("View Existing Gallery 🖼️", use_container_width=True):
             go_to_gallery()
             st.rerun()
-
-# Streamlit Cloud log viewer often only shows deploy output — use in-app diagnostics when debugging.
-if diagnostics_enabled():
-    with st.sidebar:
-        st.divider()
-        with st.expander("Soundwalk diagnostics", expanded=False):
-            db_ok = bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL"))
-            st.write("**DATABASE_URL / POSTGRES_URL:**", "set" if db_ok else "missing")
-            st.write("**Cloudinary config:**", "ok" if ensure_cloudinary_config() else "missing")
-            st.write("**OPENAI_API_KEY:**", "set" if os.environ.get("OPENAI_API_KEY") else "missing")
-            _err = st.session_state.get("_diag_last_error") or ""
-            if _err:
-                st.caption("Last recorded error:")
-                st.code(_err[:8000], language="text")
